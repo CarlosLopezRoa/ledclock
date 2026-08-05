@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ledclock"
+version = "0.1.0"
+description = "Drive a B.K.Light ACT1026 (iPixel Color, 32x32 BLE LED matrix) from macOS"
+requires-python = ">=3.11"
+dependencies = [
+    "bleak>=1.0",
+    "Pillow>=10",
+    "httpx>=0.27",
+    "PyYAML>=6",
+]
+
+[project.scripts]
+ledclock = "ledclock.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ledclock"]

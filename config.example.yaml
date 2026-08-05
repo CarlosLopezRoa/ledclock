@@ -1,0 +1,107 @@
+# ledclock — B.K.Light ACT1026 (iPixel Color, 32x32)
+
+device:
+  # Fill this in with the value printed by `ledclock scan`.
+  # On macOS this is a CoreBluetooth UUID, not a MAC address.
+  address: null           # from `ledclock scan`
+  brightness: 1           # 1-100
+  ack_timeout: 8.0
+
+  # What to leave on the panel when we knowingly let go of it: shutting down,
+  # logging out, or the lid closing.
+  #   clock = hand over to the panel's own RTC-backed clock, which keeps
+  #           running with nothing connected  (recommended)
+  #   hold  = leave the last frame frozen
+  #   off   = blank the panel
+  # Note this cannot cover an unannounced loss (crash, out of range) — nothing
+  # can be sent after the fact.
+  # The firmware clock cannot be dimmed below brightness 1, and `gain` does
+  # not reach it — that scales the pixels of images we send, and the clock is
+  # drawn by the panel itself. So it always lands brighter than our pages.
+  idle_mode: "off"        # quoted: bare off is a YAML boolean
+  clock_style: 1          # firmware clock face, 1-8
+  clock_show_date: false
+  # Hand over when the *display* sleeps too, not just the whole Mac. macOS has
+  # been seen dropping Bluetooth before it announces system sleep, leaving no
+  # time to hand anything over; the screen goes dark minutes earlier. Set false
+  # to keep the carousel running while you are away from the desk.
+  handoff_on_screen_sleep: true
+
+display:
+  dwell_seconds: 20       # how long each page stays up
+  pages:
+    - world_clocks
+    - weather_now
+    - trend
+    - forecast
+    # clock_local (big local time + date) still exists — add it back here if
+    # you ever want it. The PAR row on world_clocks already carries local time.
+  # Blank the panel outside these hours. Omit or set to null to never sleep.
+  active_hours: null      # e.g. "07:00-23:30"
+  # utc    = sort the world-clock rows west to east by live UTC offset
+  # config = keep the order listed under `clocks` below
+  clock_order: utc
+
+  # Width of the `trend` graph's window, in hours, centred on now.
+  trend_hours: 24
+
+  # The sun's path across the sky, drawn on the weather page in the slot the
+  # apparent temperature leaves empty. true squashes the arc toward the
+  # horizon in winter, matching how high the sun really gets; false draws the
+  # same half-circle all year, where only the sun's speed along it changes.
+  sun_arc_seasonal: false
+
+  # Daytime level. Scales every pixel before the frame is sent;
+  # device.brightness bottoms out at 1 and is still bright in a dark room, so
+  # this goes below that, smoothly.
+  # Try levels live with:  ./bin/ledclock page world_clocks --gain 0.25
+  gain: 0.605
+
+  # Night level, in effect between local sunset and sunrise, on every page.
+  # This is an ABSOLUTE level, not a factor on top of `gain` — the two are
+  # independent, so raising or lowering `gain` leaves nights alone. Keep it
+  # below `gain` or night stops reading as darker than day.
+  night_gain: 0.42
+
+# The big clock and the date follow this zone. null = whatever the Mac uses.
+timezone: null
+
+# The world-clock page. Seeded from iStat Menus; edit freely.
+# `code` is the 3-letter tag drawn on the left of each row.
+# `lat`/`lon` are what let each row dim against its own sunrise and sunset.
+# Leave them out and the row falls back to fixed evening/morning hours.
+clocks:
+  - {code: PAR, name: Paris,         tz: Europe/Paris,        color: "#6EB0FF", lat: 48.85341, lon: 2.3488}
+  - {code: MEX, name: Mexico City,   tz: America/Mexico_City, color: "#FF8A42", lat: 19.42847, lon: -99.12766}
+  - {code: SFO, name: San Francisco, tz: America/Los_Angeles, color: "#FFD65C", lat: 37.77493, lon: -122.41942}
+  - {code: BOG, name: Bogota,        tz: America/Bogota,      color: "#76E296", lat: 4.60971,  lon: -74.08175}
+
+# A special page that only joins the rotation when there is something to say,
+# and jumps the queue the first time it appears. Once raised, an alert is held
+# for `hold_minutes` even if the reading falls back — otherwise a gust sitting
+# on the threshold would flap the page in and out on every refresh.
+alerts:
+  enabled: true
+  lookahead_hours: 6      # beyond this a forecast is not specific enough to act on
+  rain_probability: 60    # % chance, and the hour must also carry a wet weather code
+  gust_kmh: 55            # tramontane country: raise this if it nags
+  frost_celsius: 2
+  hold_minutes: 30
+
+weather:
+  # Where the weather is read. Decimals beyond about three locate a house.
+  lat: 48.8566            # your coordinates go here
+  lon: 2.3522
+  label: HOME
+  unit: celsius           # celsius | fahrenheit
+  refresh_seconds: 600
+
+  # The 2x2 stat grid at the bottom of the weather page, read left to right,
+  # top to bottom. Pick any four of:
+  #   humidity  wind  gusts  clouds  pressure  low  high  precip  uv
+  # (low/high/precip/uv are today's figures; the rest are right now)
+  stats: [humidity, wind, low, high]
+  # Follow the Mac around: use iStat Menus' last CoreLocation fix when it is
+  # fresh, falling back to the lat/lon above when it is stale or absent.
+  # Keep those coordinates correct anyway — they are the safety net.
+  follow_istat_location: true

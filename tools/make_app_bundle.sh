@@ -1,0 +1,227 @@
+#!/bin/bash
+# Build a minimal .app bundle that is allowed to talk to Bluetooth.
+#
+# macOS kills any process that touches CoreBluetooth without an
+# NSBluetoothAlwaysUsageDescription string in its main bundle's Info.plist.
+# Homebrew's python does not ship that key, so `bleak` SIGABRTs instantly:
+#
+#   Python-....ips:  "NSBluetoothAlwaysUsageDescription"  EXC_CRASH (SIGABRT)
+#
+# Rather than patching (and re-signing) the shared Homebrew install — which
+# `brew upgrade` would undo — we copy the interpreter into a bundle we own.
+# The bundle is what macOS reads the key from, and the TCC prompt is
+# attributed to it.
+#
+# Usage: tools/make_app_bundle.sh [venv-dir]
+
+set -euo pipefail
+
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VENV_DIR="${1:-$PROJECT_DIR/.venv}"
+APP="$PROJECT_DIR/tools/LedClock.app"
+
+if [[ ! -x "$VENV_DIR/bin/python3" ]]; then
+    echo "No interpreter at $VENV_DIR/bin/python3" >&2
+    exit 1
+fi
+
+# Find the *real* interpreter. On a framework build, bin/python3.13 is only a
+# stub that re-execs Resources/Python.app/Contents/MacOS/Python — copying the
+# stub gets us nowhere, because the process ends up inside Homebrew's bundle
+# again and reads Homebrew's Info.plist.
+read -r BASE_PREFIX VERSION STUB <<<"$(
+    "$VENV_DIR/bin/python3" -c 'import sys; print(sys.base_prefix, "%d.%d" % sys.version_info[:2], sys._base_executable)'
+)"
+
+FRAMEWORK_PYTHON="$BASE_PREFIX/Resources/Python.app/Contents/MacOS/Python"
+if [[ -x "$FRAMEWORK_PYTHON" ]]; then
+    REAL_PYTHON="$FRAMEWORK_PYTHON"
+else
+    REAL_PYTHON="$STUB"
+fi
+SITE_PACKAGES="$VENV_DIR/lib/python$VERSION/site-packages"
+
+echo "interpreter:   $REAL_PYTHON"
+echo "base prefix:   $BASE_PREFIX"
+echo "site-packages: $SITE_PACKAGES"
+
+MENU_APP="$PROJECT_DIR/tools/LedClockMenu.app"
+
+rm -rf "$APP" "$MENU_APP"
+mkdir -p "$APP/Contents/MacOS" "$MENU_APP/Contents/MacOS"
+
+# A copy, not a symlink: macOS derives the main bundle from the *resolved*
+# executable path, so a symlink would point right back out of the bundle.
+cp "$REAL_PYTHON" "$APP/Contents/MacOS/ledclock-python"
+chmod +x "$APP/Contents/MacOS/ledclock-python"
+
+cat > "$APP/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>LedClock</string>
+    <key>CFBundleDisplayName</key>
+    <string>LedClock</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.ledclock.daemon</string>
+    <key>CFBundleExecutable</key>
+    <string>ledclock-python</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>0.1.0</string>
+    <key>LSBackgroundOnly</key>
+    <true/>
+    <key>NSBluetoothAlwaysUsageDescription</key>
+    <string>LedClock talks to your LED pixel panel over Bluetooth Low Energy.</string>
+    <key>NSBluetoothPeripheralUsageDescription</key>
+    <string>LedClock talks to your LED pixel panel over Bluetooth Low Energy.</string>
+</dict>
+</plist>
+PLIST
+
+# Copying the binary invalidates Homebrew's ad-hoc signature; re-sign so the
+# bundle keeps a stable identity (TCC keys its grant off that identity, so
+# without this the Bluetooth prompt would reappear on every rebuild).
+codesign --force --sign - --identifier com.ledclock.daemon "$APP" >/dev/null 2>&1 || {
+    echo "warning: codesign failed; Bluetooth permission may not persist" >&2
+}
+
+# The menu bar app needs its own bundle. LedClock.app is LSBackgroundOnly,
+# which forbids any UI at all — a status item included. This one is
+# LSUIElement instead: menu bar presence, no Dock icon. It also declares no
+# Bluetooth usage, because it never touches the radio; it only talks to the
+# daemon over the control socket.
+cp "$REAL_PYTHON" "$MENU_APP/Contents/MacOS/ledclock-menu"
+chmod +x "$MENU_APP/Contents/MacOS/ledclock-menu"
+
+cat > "$MENU_APP/Contents/Info.plist" <<'MENUPLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>LedClock Menu</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.ledclock.menubar</string>
+    <key>CFBundleExecutable</key>
+    <string>ledclock-menu</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>CFBundleVersion</key>
+    <string>0.1.0</string>
+    <key>LSUIElement</key>
+    <true/>
+</dict>
+</plist>
+MENUPLIST
+
+codesign --force --sign - --identifier com.ledclock.menubar "$MENU_APP" \
+    >/dev/null 2>&1 || true
+
+cat > "$PROJECT_DIR/bin/ledclock-menu" <<MENULAUNCHER
+#!/bin/bash
+# Start the menu bar app. Generated by tools/make_app_bundle.sh.
+export PYTHONHOME="$BASE_PREFIX"
+export PYTHONPATH="$SITE_PACKAGES:$PROJECT_DIR\${PYTHONPATH:+:\$PYTHONPATH}"
+exec "$MENU_APP/Contents/MacOS/ledclock-menu" -m ledclock.menubar "\$@"
+MENULAUNCHER
+chmod +x "$PROJECT_DIR/bin/ledclock-menu"
+
+cat > "$PROJECT_DIR/bin/ledclock" <<LAUNCHER
+#!/bin/bash
+# Run the ledclock CLI through the Bluetooth-capable app bundle.
+# Generated by tools/make_app_bundle.sh — re-run that after moving the project.
+#
+# The interpreter now lives outside its framework, so point it back at the
+# stdlib explicitly and add the venv's packages by hand: the copy is not a
+# venv interpreter, so pyvenv.cfg discovery does not apply.
+set -uo pipefail
+
+APP="$APP"
+RUNNER="$PROJECT_DIR/tools/bundle_runner.py"
+export PYTHONHOME="$BASE_PREFIX"
+export PYTHONPATH="$SITE_PACKAGES:$PROJECT_DIR\${PYTHONPATH:+:\\\$PYTHONPATH}"
+
+# Commands that never touch the radio can skip the LaunchServices detour and
+# run straight away — no reason to pay ~2s of app launch to tail a log.
+for arg in "\$@"; do
+    case "\$arg" in
+        agent|show|preview|cities|-h|--help)
+            exec "\$APP/Contents/MacOS/ledclock-python" -m ledclock.cli "\$@" ;;
+        -*) continue ;;
+        *) break ;;
+    esac
+done
+
+# Direct exec is faster and streams natively, but only works when the parent
+# terminal itself is allowed to use Bluetooth. Opt in with LEDCLOCK_DIRECT=1.
+if [[ -n "\${LEDCLOCK_DIRECT:-}" ]]; then
+    exec "\$APP/Contents/MacOS/ledclock-python" -m ledclock.cli "\$@"
+fi
+
+tmp="\$(mktemp -d -t ledclock)"
+log="\$tmp/out"; status="\$tmp/status"; pid="\$tmp/pid"
+: > "\$log"
+
+child=""
+cleanup() {
+    [[ -f "\$pid" ]] && kill "\$(cat "\$pid")" 2>/dev/null
+}
+trap 'cleanup' INT TERM
+
+# -n forces a fresh instance; without it LaunchServices would just re-activate
+# an already-running one (which matters once the daemon is up).
+open -n -a "\$APP" --args "\$RUNNER" "\$log" "\$status" "\$pid" "\$@" || {
+    echo "could not launch \$APP" >&2
+    rm -rf "\$tmp"
+    exit 1
+}
+
+tail -n +1 -f "\$log" & tailpid=\$!
+
+waited=0
+while [[ ! -f "\$status" ]]; do
+    sleep 0.15
+    waited=\$((waited + 1))
+    # If the pid file exists but the process is gone without leaving a status,
+    # TCC (or something like it) killed it — stop waiting forever.
+    if [[ -f "\$pid" ]] && ! kill -0 "\$(cat "\$pid")" 2>/dev/null; then
+        sleep 0.3
+        [[ -f "\$status" ]] && break
+        kill \$tailpid 2>/dev/null; wait \$tailpid 2>/dev/null
+        echo "ledclock exited without a status (killed?); see \$log" >&2
+        exit 1
+    fi
+    if [[ ! -f "\$pid" && \$waited -gt 100 ]]; then
+        kill \$tailpid 2>/dev/null; wait \$tailpid 2>/dev/null
+        echo "ledclock never started; is \$APP intact?" >&2
+        rm -rf "\$tmp"
+        exit 1
+    fi
+done
+
+sleep 0.3
+kill \$tailpid 2>/dev/null; wait \$tailpid 2>/dev/null
+code="\$(cat "\$status" 2>/dev/null)"
+rm -rf "\$tmp"
+exit "\${code:-1}"
+LAUNCHER
+chmod +x "$PROJECT_DIR/bin/ledclock"
+
+echo
+echo "Built $APP"
+echo "Built $MENU_APP"
+echo "Launcher: $PROJECT_DIR/bin/ledclock"
+echo
+echo "The first BLE command will raise a Bluetooth permission prompt."
+echo "Approve it, or allow it later under"
+echo "  System Settings > Privacy & Security > Bluetooth."
