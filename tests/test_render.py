@@ -955,19 +955,53 @@ class TestSunArc(unittest.TestCase):
         self.assertFalse(any(px[x, 9] != (0, 0, 0) for x in range(17, 32)))
 
 
-    def test_the_sun_walks_left_to_right_through_the_day(self):
-        def sun_x(hour):
-            canvas = self._page(
-                datetime(2026, 6, 21, hour, 0, tzinfo=timezone.utc))
-            px = canvas.image.load()
-            hits = [x for x in range(17, 32) for y in range(9, 17)
-                    if px[x, y] == pages.SUN]
-            return min(hits) if hits else None
+    def _filled(self, moment):
+        canvas = self._page(moment)
+        px = canvas.image.load()
+        return sum(1 for x, y in self._slot(canvas) if px[x, y] == pages.ARC_DONE)
 
-        morning, midday, evening = sun_x(6), sun_x(11), sun_x(17)
-        self.assertIsNotNone(morning)
+    def test_the_wedge_grows_through_the_day(self):
+        morning = self._filled(datetime(2026, 6, 21, 6, 0, tzinfo=timezone.utc))
+        midday = self._filled(datetime(2026, 6, 21, 11, 0, tzinfo=timezone.utc))
+        evening = self._filled(datetime(2026, 6, 21, 17, 0, tzinfo=timezone.utc))
         self.assertLess(morning, midday)
         self.assertLess(midday, evening)
+
+    def test_the_wedge_fills_from_the_left(self):
+        """Dawn is the left foot, so early on nothing past the meridian is spent.
+
+        The base does reach the centre even at first light: a wedge keeps its
+        opening radius, the same way a slice of pizza has two straight edges.
+        """
+        canvas = self._page(datetime(2026, 6, 21, 6, 0, tzinfo=timezone.utc))
+        px = canvas.image.load()
+        spent = [x for x, y in self._slot(canvas) if px[x, y] == pages.ARC_DONE]
+        self.assertTrue(spent)
+        self.assertLessEqual(max(spent), 24, "nothing right of the meridian yet")
+
+    def test_the_base_is_not_spent_before_its_time(self):
+        """The bug this guards: the whole base row filled at any hour.
+
+        `atan2` returns -pi, not +pi, when handed a negative zero — which is
+        exactly what the baseline row produces. The right-hand half of the
+        base came out as fraction -1, passed the "already spent" test, and was
+        painted from dawn onwards.
+        """
+        self.assertEqual(pages._wedge_fraction(-6, 0, 6, 6), 0.0)
+        self.assertEqual(pages._wedge_fraction(6, 0, 6, 6), 1.0)
+        self.assertAlmostEqual(pages._wedge_fraction(0, -6, 6, 6), 0.5)
+
+    def test_the_dome_bounds_the_wedge(self):
+        hours = [pages._wedge_fraction(px, py, 6, 6)
+                 for py in range(-6, 1) for px in range(-6, 7)]
+        inside = [f for f in hours if f is not None]
+        self.assertTrue(inside)
+        self.assertGreaterEqual(min(inside), 0.0)
+        self.assertLessEqual(max(inside), 1.0)
+        # Corners sit outside a circle of radius 6.
+        self.assertIsNone(pages._wedge_fraction(6, -6, 6, 6))
+        # Below the horizon is never part of the day.
+        self.assertIsNone(pages._wedge_fraction(0, 1, 6, 6))
 
     def test_winter_flattens_the_arc_and_summer_lifts_it(self):
         """The season should be legible in the shape, not only in the speed."""

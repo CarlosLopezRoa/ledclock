@@ -182,11 +182,10 @@ def _draw_temperature(canvas: Canvas, x: int, y: int, value: float,
     canvas.text(x, y, text, FONT_5x7, color)
 
 
-#: The sun arc: the track already walked, the track still to come, and the
-#: sun itself. The moon no longer shares this — it gets its real path.
+#: The sun's dome: the part of the day already spent, and the outline of what
+#: is left. The moon does not share this — it gets its real path.
 ARC_DONE: RGB = (150, 120, 50)
 ARC_AHEAD: RGB = (52, 48, 40)
-SUN: RGB = (255, 208, 70)
 MOON_MARK: RGB = (244, 248, 255)
 #: The track the moon follows. Faint, but not as faint as the "still to
 #: come" grey of the sun arc: here the track is the frame of reference, not
@@ -245,45 +244,60 @@ def _draw_moon_sky(canvas: Canvas, left: int, baseline: int, width: int,
     return True
 
 
-def _draw_sky_arc(canvas: Canvas, centre_x: int, baseline: int, radius: int,
-                  progress: float, *, done: RGB, ahead: RGB, marker: RGB,
-                  elevation: float | None = None) -> None:
-    """A half-arc with a body somewhere along it.
+def _wedge_fraction(px: int, py: int, radius: int, height: int) -> float | None:
+    """Where a pixel falls along the dome's sweep, 0 at rise and 1 at set.
 
-    Walked left to right: rise at the left foot, the meridian at the top, set
-    at the right foot. The position is the fraction of the period elapsed —
-    of daylight for the sun, of darkness for the moon — so the two together
-    tile the whole 24 hours.
+    None if the pixel is outside the dome. Coordinates are relative to the
+    dome's centre, with py negative upward — the same parametrisation
+    the dome is parametrised, solved backwards so the area can be filled
+    rather than only outlined.
+    """
+    if py > 0:
+        return None
+    # Scale y back up when the dome is squashed, so the test stays circular.
+    stretched = py * (radius / height) if height else py
+    if px * px + stretched * stretched > radius * radius:
+        return None
+    # abs(), not -stretched: on the baseline row that value is negative zero,
+    # and atan2(-0.0, negative) returns -pi rather than +pi. The right-hand
+    # half of the base then read as fraction -1 and was drawn as spent all
+    # day long.
+    return math.atan2(abs(stretched), -px) / math.pi
 
-    This is a progress indicator, not an ephemeris: the shape is a plain
-    semicircle and the body's height is not a real altitude. Keeping it
-    stylised is what lets the same drawing serve the moon, whose true path has
-    no simple relationship to the night at all.
 
-    Pass `elevation` (the day's noon altitude in degrees) to squash the arc
-    toward the horizon in winter and stand it tall in summer.
+def _draw_sky_wedge(canvas: Canvas, centre_x: int, baseline: int, radius: int,
+                    progress: float, *, done: RGB, ahead: RGB,
+                    elevation: float | None = None) -> None:
+    """The same dome, filled in as the day is spent.
+
+    A slice that starts as a sliver at dawn and reaches half a disc at dusk.
+    Area reads faster than position: you can see how much daylight is left
+    without first having to find a dot and judge where along a line it sits.
+
+    Only the spent part is filled; what is left of the day is drawn as an
+    outline. Filling both was the first attempt and it read as one dark mass
+    with a bright corner — the eye went to the block, not to the boundary
+    between them, which is the only thing that moves.
     """
     height = radius
     if elevation is not None:
-        # sin() of the noon altitude: 24 degrees in midwinter flattens the arc
-        # to about 40% of its summer height.
         height = max(2, round(radius * math.sin(math.radians(max(0.0, elevation)))))
 
-    # Walk the arc in small steps so no pixel of the path is skipped.
+    progress = min(1.0, max(0.0, progress))
+
+    # The dome the day is spent against, so there is something to fill toward.
     steps = radius * 12
     for step in range(steps + 1):
-        fraction = step / steps
-        angle = math.pi * fraction
-        x = round(centre_x - radius * math.cos(angle))
-        y = round(baseline - height * math.sin(angle))
-        canvas.pixel(x, y, done if fraction <= progress else ahead)
+        angle = math.pi * (step / steps)
+        canvas.pixel(round(centre_x - radius * math.cos(angle)),
+                     round(baseline - height * math.sin(angle)), ahead)
 
-    angle = math.pi * min(1.0, max(0.0, progress))
-    canvas.pixel(
-        round(centre_x - radius * math.cos(angle)),
-        round(baseline - height * math.sin(angle)),
-        marker,
-    )
+    for py in range(-height, 1):
+        for px in range(-radius, radius + 1):
+            fraction = _wedge_fraction(px, py, radius, height)
+            if fraction is None or fraction > progress:
+                continue
+            canvas.pixel(centre_x + px, baseline + py, done)
 
 
 def _mark_stale(canvas: Canvas, weather: Weather | None) -> None:
@@ -452,9 +466,9 @@ def weather_now(ctx: PageContext) -> Canvas:
         geometry = dict(centre_x=24, baseline=15, radius=6)
         daylight = sun.day_progress(ctx.now, latitude, longitude)
         if daylight is not None:
-            _draw_sky_arc(
+            _draw_sky_wedge(
                 canvas, **geometry, progress=daylight,
-                done=ARC_DONE, ahead=ARC_AHEAD, marker=SUN,
+                done=ARC_DONE, ahead=ARC_AHEAD,
                 elevation=(sun.max_elevation(ctx.now.date(), latitude)
                            if ctx.config.display.sun_arc_seasonal else None),
             )

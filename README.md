@@ -190,13 +190,21 @@ as `0` would have hidden the whole point of the warning.
 ## The sun's path
 
 `weather_now` shows the apparent temperature only when it differs from the
-real one by more than a degree. The rest of the time that slot holds an arc
-of the sun's path instead: sunrise at the left foot, solar noon at the top,
-sunset at the right foot, with the walked portion lit and the rest dim.
+real one by more than a degree. The rest of the time that slot holds the sun's
+day instead: a dome with sunrise at the left foot, solar noon at the top and
+sunset at the right, filled in as the day is spent — a wedge that starts as a
+sliver at dawn and reaches half a disc at dusk.
 
-The sun's position along it is the fraction of daylight elapsed, so it crosses
-the same arc in nine hours in December and fifteen in June — the season shows
-up as speed.
+Area reads faster than position. An earlier version drew a dot travelling
+along the outline, which made you find the dot and then judge where along the
+line it sat; a filled wedge answers "how much daylight is left" at a glance.
+What is left of the day stays as an outline, so there is something to fill
+toward — filling both halves in solid was tried first and read as one dark
+mass with a bright corner.
+
+How far it has filled is the fraction of daylight elapsed, so the same dome
+fills over nine hours in December and fifteen in June — the season shows up as
+speed.
 
 `display.sun_arc_seasonal` (on by default) also puts the season in the
 *shape*, scaling the arc's height by the sun's noon altitude: about 24° at
