@@ -48,6 +48,16 @@ CONNECT_TIMEOUT = 30.0
 DISCONNECT_TIMEOUT = 10.0
 WRITE_TIMEOUT = 10.0
 
+#: How many times to resend a frame the panel did not acknowledge.
+#:
+#: A missed ack is not a broken link. The disconnect callback releases the ack
+#: wait, so a *timeout* can only be reached while the connection is still up —
+#: a genuine drop surfaces as "disconnected mid-transfer" instead. Treating a
+#: timeout as a dead link tore down thirteen live connections in thirty-five
+#: hours, each costing some fifteen seconds of frozen panel while it
+#: reconnected. Resending costs one more ack wait and usually works.
+ACK_RETRIES = 2
+
 # --- commands ---------------------------------------------------------------
 CMD_PNG = 0x0002
 CMD_GIF = 0x0003
@@ -370,4 +380,18 @@ class IPixel:
                 cmd.to_bytes(2, "little") + bytes([option]) + size + crc + tail + window
             )
             packet = (2 + len(body)).to_bytes(2, "little") + body
-            await self._send(packet, expect_ack=True)
+            await self._send_with_retry(packet)
+
+    async def _send_with_retry(self, packet: bytes) -> None:
+        """Push one window, resending if the panel stays quiet."""
+        for attempt in range(ACK_RETRIES + 1):
+            try:
+                await self._send(packet, expect_ack=True)
+                return
+            except IPixelError:
+                # Only a still-live link is worth resending to; a real drop
+                # has to reach the supervisor so it can reconnect.
+                if not self.is_connected or attempt == ACK_RETRIES:
+                    raise
+                log.warning("no ack for the frame; resending (%d of %d)",
+                            attempt + 2, ACK_RETRIES + 1)

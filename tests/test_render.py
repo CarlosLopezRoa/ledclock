@@ -1471,6 +1471,70 @@ class TestHandoff(unittest.IsolatedAsyncioTestCase):
         # And it hands over on the way out.
         self.assertEqual(panel.calls, [("clock", 1, False)])
 
+    async def test_an_unacked_frame_is_resent_not_reconnected(self):
+        """The bug this guards: thirty-five hours, thirteen live connections
+        thrown away.
+
+        The disconnect callback releases the ack wait, so a *timeout* can only
+        be reached while the link is still up — a real drop arrives as
+        "disconnected mid-transfer". Treating the timeout as a dead link meant
+        a full reconnect, and some fifteen seconds of frozen panel, every time
+        one frame went unanswered.
+        """
+        from ledclock import ipixel
+
+        panel = ipixel.IPixel("test")
+        attempts = []
+
+        async def flaky(_packet, *, expect_ack=False):
+            attempts.append(1)
+            if len(attempts) < 3:
+                raise ipixel.IPixelError("panel never acked the transfer")
+
+        panel._send = flaky
+        type(panel).is_connected = property(lambda self: True)
+        try:
+            await panel._send_with_retry(b"frame")
+        finally:
+            del type(panel).is_connected
+        self.assertEqual(len(attempts), 3, "should have resent twice")
+
+    async def test_a_dead_link_is_not_resent_to(self):
+        """Only a live link is worth resending to; a real drop has to reach
+        the supervisor so it can reconnect."""
+        from ledclock import ipixel
+
+        panel = ipixel.IPixel("test")
+        attempts = []
+
+        async def always_fails(_packet, *, expect_ack=False):
+            attempts.append(1)
+            raise ipixel.IPixelError("panel disconnected mid-transfer")
+
+        panel._send = always_fails
+        with self.assertRaises(ipixel.IPixelError):
+            await panel._send_with_retry(b"frame")
+        self.assertEqual(len(attempts), 1, "no point resending into the void")
+
+    async def test_retries_are_bounded(self):
+        from ledclock import ipixel
+
+        panel = ipixel.IPixel("test")
+        attempts = []
+
+        async def always_times_out(_packet, *, expect_ack=False):
+            attempts.append(1)
+            raise ipixel.IPixelError("panel never acked the transfer")
+
+        panel._send = always_times_out
+        type(panel).is_connected = property(lambda self: True)
+        try:
+            with self.assertRaises(ipixel.IPixelError):
+                await panel._send_with_retry(b"frame")
+        finally:
+            del type(panel).is_connected
+        self.assertEqual(len(attempts), ipixel.ACK_RETRIES + 1)
+
     async def test_every_ble_call_has_a_ceiling(self):
         """Two overnight hangs came from unbounded CoreBluetooth calls.
 
