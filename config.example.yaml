@@ -63,6 +63,13 @@ display:
   # below `gain` or night stops reading as darker than day.
   night_gain: 0.42
 
+  # The world-clock page is the one that cannot simply take `night_gain`: it
+  # already dims each row against that city's own sun, and dimming the night
+  # rows again is exactly the double-dimming `night_gain` exists to avoid.
+  # So after local sunset only the *daytime* rows move, and only part of the
+  # way down — see pages.CLOCK_DAY_AT_NIGHT. Left at the day level they were
+  # the brightest thing on the panel at two in the morning.
+
 # The big clock and the date follow this zone. null = whatever the Mac uses.
 timezone: null
 

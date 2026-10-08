@@ -40,6 +40,24 @@ NIGHT_END = 7
 #: page-level rule on top would dim the night rows twice.
 SELF_DIMMING = frozenset({"world_clocks"})
 
+#: How far a row where the sun is up is pulled toward the night level once
+#: the sun is down *here*. The exemption above was read for years as "this
+#: page ignores local night", and the cost was never measured: at two in the
+#: morning a daytime row drew full white, 44% brighter than anything else the
+#: panel shows at that hour, which is what finally made it annoying.
+#:
+#: The fix is a blend rather than the page-level rule, because the night rows
+#: must not move — they already sit at the night level and dimming them again
+#: is the double-dimming the exemption exists to prevent. 1.0 would be the old
+#: behaviour and 0.0 would flatten the two kinds of row into one, taking with
+#: it the only thing the page has to say beyond the hour.
+#:
+#: A quarter of the way leaves the daytime rows 11% over the ceiling — twelve
+#: steps out of 255. That is deliberately close to the floor: the complaint
+#: was glare in a dark room, and a dark-adapted eye separates those twelve
+#: steps far better than this reads on a lit screen.
+CLOCK_DAY_AT_NIGHT = 0.25
+
 DAYS_ES = ["LUN", "MAR", "MIE", "JUE", "VIE", "SAB", "DOM"]
 DAYS_ES_SHORT = ["LU", "MA", "MI", "JU", "VI", "SA", "DO"]
 MONTHS_ES = ["ENE", "FEB", "MAR", "ABR", "MAY", "JUN",
@@ -358,15 +376,21 @@ def world_clocks(ctx: PageContext) -> Canvas:
             ZoneInfo(city.timezone)).utcoffset() or timedelta(0))
     cities = cities[:4]
 
-    factor = night_factor(ctx.config.display)
+    there_night = night_factor(ctx.config.display)
+    # A row is dimmed for its own city's night, and the whole page is pulled
+    # down for ours — but only the daytime rows, and only part of the way.
+    there_day = 1.0
+    if ctx.is_night_here():
+        there_day = there_night + CLOCK_DAY_AT_NIGHT * (1.0 - there_night)
 
     for index, city in enumerate(cities):
         y = 1 + index * 8
         there = ctx.now.astimezone(ZoneInfo(city.timezone))
         night = _is_night(there, city.latitude, city.longitude)
 
-        code_color = dim(city.color, factor) if night else city.color
-        time_color = dim(WHITE, factor) if night else WHITE
+        factor = there_night if night else there_day
+        code_color = dim(city.color, factor)
+        time_color = dim(WHITE, factor)
 
         clock = _clock_text(there)
         # The clock is right-aligned, so whatever it leaves is the code's budget.

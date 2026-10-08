@@ -307,6 +307,15 @@ The rule applies to **every page**, except that `world_clocks` opts out
 (`pages.SELF_DIMMING`) because it already dims each row against *that city's*
 sun — applying the page-level rule too would dim night rows twice.
 
+That exemption is narrower than it looks, and reading it as "this page does
+what it likes after dark" cost something: a row where the sun is up went on
+drawing at the full day level at two in the morning, 44% brighter than
+anything else the panel showed at that hour. The night rows genuinely cannot
+move — they are already at `night_gain`. So after local sunset only the
+daytime rows are pulled down, and only part of the way:
+`pages.CLOCK_DAY_AT_NIGHT` is how far. They have to stay above `night_gain`,
+or nothing on the page says where the sun is.
+
 Give each city `lat`/`lon` in `config.yaml` to get real sunrise/sunset for its
 row; without them the row falls back to fixed evening/morning hours.
 

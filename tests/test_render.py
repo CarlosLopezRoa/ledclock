@@ -149,6 +149,23 @@ def _config(**kwargs) -> Config:
     return Config(clocks=clocks, **kwargs)
 
 
+def _lit_channels(px, y: int) -> list[set[int]]:
+    """Which channels each lit pixel of a row uses.
+
+    Identifies a city by its colour without pinning the level: the clock rows
+    are dimmed by two independent rules and an ordering test has no business
+    knowing about either.
+    """
+    return [{i for i, value in enumerate(px[x, y]) if value}
+            for x in range(12) if any(px[x, y])]
+
+
+def _day_row_at_night(display: DisplayConfig) -> float:
+    """What a daytime row is dimmed to while the sun is down here."""
+    night = pages.night_factor(display)
+    return night + pages.CLOCK_DAY_AT_NIGHT * (1.0 - night)
+
+
 class TestPages(unittest.TestCase):
     def setUp(self):
         self.now = datetime(2026, 8, 1, 20, 25, tzinfo=timezone.utc)
@@ -181,13 +198,10 @@ class TestPages(unittest.TestCase):
         canvas = pages.render("world_clocks", self._ctx())
         # Row order is SFO, MEX, BOG, PAR by UTC offset; each row's tag is
         # drawn in that city's colour, so the colours identify the rows.
+        # Read as channels rather than values: both dimming rules change the
+        # level and neither changes which channels are lit.
         px = canvas.image.load()
-        row_colors = []
-        for index in range(4):
-            y = 1 + index * 8
-            row = {px[x, y] for x in range(12)} - {(0, 0, 0)}
-            row_colors.append(row)
-        self.assertTrue(any((255, 0, 0) in c for c in row_colors[:1]))
+        self.assertTrue(all(lit == {0} for lit in _lit_channels(px, 1)))
 
     def test_config_order_is_respected_when_asked(self):
         config = _config(display=DisplayConfig(clock_order="config"))
@@ -201,10 +215,24 @@ class TestPages(unittest.TestCase):
     def test_night_rows_are_dimmed(self):
         canvas = pages.render("world_clocks", self._ctx())
         px = canvas.image.load()
-        # SFO at 13:25 is daytime and keeps its full colour; PAR at 22:25 does not.
-        self.assertIn((255, 0, 0), {px[x, 1] for x in range(12)})
-        self.assertIn(dim((255, 255, 0), pages.night_factor(DisplayConfig())),
+        display = DisplayConfig()
+        # PAR at 22:25 is night there, so it sits at the night level.
+        self.assertIn(dim((255, 255, 0), pages.night_factor(display)),
                       {px[x, 25] for x in range(12)})
+        # SFO at 13:25 is daytime there, but it is night *here*, so it is
+        # pulled part of the way down rather than drawn at full.
+        self.assertIn(dim((255, 0, 0), _day_row_at_night(display)),
+                      {px[x, 1] for x in range(12)})
+
+    def test_day_rows_keep_their_full_colour_while_the_sun_is_up_here(self):
+        """Nothing about the page changes before sunset."""
+        noon = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
+        ctx = pages.PageContext(config=_config(), now=noon)
+        self.assertFalse(ctx.is_night_here())
+        px = pages.render("world_clocks", ctx).image.load()
+        # SFO at 03:00 is night there; MEX at 04:00 likewise; BOG 05:00 too.
+        # PAR at 12:00 is the one row with the sun up, and it is untouched.
+        self.assertIn((255, 255, 0), {px[x, 25] for x in range(12)})
 
     def test_night_rows_survive_a_low_gain(self):
         """The bug this guards: gain and night dimming used to multiply.
@@ -1326,9 +1354,24 @@ class TestDayNightAcrossPages(unittest.TestCase):
         """It dims per row against each city's own sun, so the page-level
         rule must skip it — otherwise night rows get hit twice."""
         self.assertIn("world_clocks", pages.SELF_DIMMING)
-        # Local midnight, but daytime in the Americas: those rows stay bright.
-        self.assertAlmostEqual(self._peak("world_clocks", self.NIGHT) / 255,
-                               0.55, delta=0.02)
+
+    def test_daytime_rows_still_answer_to_local_night(self):
+        """The exemption is about not dimming twice, not about ignoring dusk.
+
+        Read as "this page does what it likes after dark", it left a row where
+        the sun is up drawing full white at one in the morning — brighter than
+        every other page by the ratio of day gain to night gain.
+        """
+        display = self._config().display
+        peak = self._peak("world_clocks", self.NIGHT) / 255
+        self.assertAlmostEqual(peak, display.gain * _day_row_at_night(display),
+                               delta=0.02)
+        # The margins that matter are the ones the panel can actually show,
+        # so they are checked in steps of 255 rather than in fractions: the
+        # daytime row has to stay clear of the night level, or nothing says
+        # where the sun is, and clear of the day level, which is the point.
+        self.assertGreater(round(peak * 255), round(display.night_gain * 255) + 3)
+        self.assertLess(round(peak * 255), round(display.gain * 255) - 3)
 
 
 class TestConfigHelpers(unittest.TestCase):
