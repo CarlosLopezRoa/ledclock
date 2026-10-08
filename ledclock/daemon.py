@@ -21,11 +21,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 import signal
+import time
 from contextlib import suppress
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from bleak.exc import BleakError
 
@@ -34,6 +34,7 @@ from . import control
 from .alerts import AlertTracker
 from .config import Config, is_active
 from .ipixel import IPixel, IPixelError
+from .sources import calendar as calendar_source
 from .sources import weather as weather_source
 
 log = logging.getLogger(__name__)
@@ -62,6 +63,57 @@ class Suspended(Exception):
 
 #: How soon to try the weather again after a fetch did not produce fresh data.
 RETRY_AFTER_FAILURE = 60.0
+
+
+class AgendaFeed:
+    """Today's events, re-read now and then.
+
+    Kept separate from the weather because it fails differently: there is no
+    network and no cache, only a permission that may not have been granted
+    yet, and a read that costs a millisecond against a local store.
+    """
+
+    def __init__(self, config: Config) -> None:
+        self._config = config
+        self.events: list = []
+        #: The next day that has anything in it, and what it holds — for the
+        #: summary the page falls back to once today is spent. Not simply
+        #: tomorrow: on a Friday evening tomorrow is empty and the useful
+        #: answer is Monday.
+        self.ahead: tuple | None = None
+        self._read_at: float = 0.0
+        #: The start time of the event already announced, so it jumps the
+        #: carousel once rather than on every tick of its last ten minutes.
+        self._announced: datetime | None = None
+
+    @property
+    def _wanted(self) -> dict:
+        return {c.name: c.color for c in self._config.agenda.calendars}
+
+    def refresh_if_stale(self, now: datetime) -> None:
+        if time.monotonic() - self._read_at < self._config.agenda.refresh_seconds:
+            return
+        self._read_at = time.monotonic()
+        local = now.astimezone()
+        self.events = calendar_source.fetch(local, self._wanted)
+
+        self.ahead = None
+        for days in range(1, self._config.agenda.look_ahead_days + 1):
+            day = local + timedelta(days=days)
+            found = calendar_source.fetch(day, self._wanted)
+            if found:
+                self.ahead = (day.date(), found)
+                break
+
+    def imminent(self, now: datetime) -> object | None:
+        """An event close enough to deserve interrupting the carousel, once."""
+        limit = self._config.agenda.imminent_minutes
+        for event in self.events:
+            minutes = event.minutes_until(now)
+            if 0 < minutes <= limit and self._announced != event.start:
+                self._announced = event.start
+                return event
+        return None
 
 
 class WeatherFeed:
@@ -133,6 +185,7 @@ class Daemon:
     def __init__(self, config: Config) -> None:
         self.config = config
         self.feed = WeatherFeed(config)
+        self.agenda = AgendaFeed(config)
         self.alerts = AlertTracker(config.alerts)
 
         # Carousel state, all of it reachable over the control socket.
@@ -471,16 +524,27 @@ class Daemon:
             # A brand-new warning jumps the queue — ahead of a pin, too. One
             # you only see a full rotation later is not much of a warning, and
             # one suppressed because a page was pinned is no warning at all.
+            self.agenda.refresh_if_stale(now)
+            soon = self.agenda.imminent(now.astimezone())
+
             fresh = self.alerts.take_new()
             if fresh is not None:
                 log.info("new alert: %s in %dh", fresh.kind, fresh.lead_hours)
                 name = "alert"
+            elif soon is not None:
+                # Same courtesy a new weather warning gets: something about to
+                # happen is no use a full rotation later.
+                log.info("%s starts in %d min",
+                         soon.calendar, soon.minutes_until(now.astimezone()))
+                name = "agenda"
             else:
                 name = self._next_page(warning is not None)
 
             ctx = pages.PageContext(
                 config=self.config, now=now, weather=self.feed.current,
                 location=self.feed.location, alert=warning,
+                events=self.agenda.events,
+                ahead=self.agenda.ahead,
             )
             png = pages.render(name, ctx).to_png(gain=self.config.display.gain)
             self.showing = name

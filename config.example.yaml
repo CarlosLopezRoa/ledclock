@@ -31,6 +31,7 @@ display:
   dwell_seconds: 20       # how long each page stays up
   pages:
     - world_clocks
+    - agenda                # drop this line if you do not want calendar access
     - weather_now
     - trend
     - forecast
@@ -94,6 +95,52 @@ alerts:
   gust_kmh: 55            # tramontane country: raise this if it nags
   frost_celsius: 2
   hold_minutes: 30
+
+# The day column, read from the macOS Calendar app. Delete this block, or
+# leave `calendars` empty, and the page draws nothing and asks for nothing:
+# permission is only ever requested when there is a calendar to look at.
+#
+# IMPORTANT: macOS attributes calendar permission to the *app bundle*, so the
+# page works from `./bin/ledclock` (which runs LedClock.app) and not from a
+# bare `python -m ledclock` in a terminal — that asks on the terminal's behalf
+# instead, which is a different grant and looks like a mystery denial.
+agenda:
+  # Names exactly as the Calendar app's sidebar spells them. Anything not
+  # listed here is never read.
+  calendars:
+    - Home                        # bare name: keep the colour Calendar gives it
+    - {name: Work,     color: "#46AAFF"}
+    - {name: Clients,  color: "#FF5046"}
+    - {name: Personal, color: "#78EB55"}
+  # Calendar's own palette is chosen for a bright screen, not for LEDs behind
+  # diffuser: its blue lands near-black at the gain this panel runs at. Hence
+  # the overrides above — brighten rather than copy.
+
+  # How much time one row of the column is worth. Twenty-four rows at fifteen
+  # minutes is a fixed six-hour window: a half-hour meeting is always two
+  # rows, whatever else the day holds. Raise it to see further at the cost of
+  # short events shrinking toward a single pixel.
+  minutes_per_row: 15
+
+  # Keep this much of the past on screen even when nothing is in it, so the
+  # now-marker sits near the top rather than welded to the header divider.
+  look_back_min_hours: 0.5
+
+  # Inside this many minutes the page jumps the carousel, the way a new
+  # weather warning does, and the header names the event.
+  imminent_minutes: 10
+
+  refresh_seconds: 120
+
+  # Once the day is spent the column has nothing to say — there is no "now"
+  # to place in it — so the page switches to a plain list of the next day
+  # that has anything in it. Not before this hour, though: at half past seven
+  # the evening is still ahead.
+  summary_after: "23:00"
+
+  # How far to look for that next day. Four carries a Friday evening across
+  # to Monday, and a Thursday one across a long weekend.
+  look_ahead_days: 4
 
 weather:
   # Where the weather is read. Decimals beyond about three locate a house.

@@ -82,6 +82,20 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <string>LedClock talks to your LED pixel panel over Bluetooth Low Energy.</string>
     <key>NSBluetoothPeripheralUsageDescription</key>
     <string>LedClock talks to your LED pixel panel over Bluetooth Low Energy.</string>
+    <!-- Same reason as the Bluetooth keys above: macOS attributes the grant
+         to the bundle, so without these the agenda page can never be allowed
+         to read anything. Both spellings are present because the full-access
+         key is the one recent macOS asks for and the older one still applies
+         to systems that predate it.
+
+         Keep the wording true. An earlier draft promised that titles were
+         never read, which stopped being the case the moment the header
+         started naming the next event — and a consent string that lies is
+         worse than no page at all. -->
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>LedClock shows today's schedule on your LED pixel panel: when each event starts and ends, and the first few letters of its name. Nothing leaves this Mac.</string>
+    <key>NSCalendarsUsageDescription</key>
+    <string>LedClock shows today's schedule on your LED pixel panel: when each event starts and ends, and the first few letters of its name. Nothing leaves this Mac.</string>
 </dict>
 </plist>
 PLIST

@@ -24,8 +24,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from ledclock import menubar, pages  # noqa: E402
 from ledclock.alerts import Alert  # noqa: E402
 from ledclock.config import (  # noqa: E402
-    ClockCity, Config, DisplayConfig, WeatherConfig,
+    AgendaCalendar, AgendaConfig, ClockCity, Config, DisplayConfig, WeatherConfig,
 )
+from ledclock.sources.calendar import Event  # noqa: E402
 from ledclock.sources.weather import Current, Day, Hour, Weather  # noqa: E402
 
 OUT = Path(__file__).resolve().parent.parent / "docs"
@@ -44,12 +45,45 @@ DEMO_CLOCKS = [
 ]
 
 
+#: Invented calendars and invented meetings. This matters more here than
+#: anywhere else in this file: the agenda page draws the opening letters of
+#: real event titles, and `docs/` is committed. A screenshot of a working
+#: install would publish who the author met and when.
+DEMO_CALENDARS = [
+    AgendaCalendar("home", (185, 130, 255)),
+    AgendaCalendar("personal", (120, 235, 85)),
+    AgendaCalendar("work", (70, 170, 255)),
+    AgendaCalendar("clients", (255, 80, 70)),
+]
+
+
 def demo_config() -> Config:
     return Config(
         display=DisplayConfig(gain=1.0, night_gain=0.42, trend_hours=24.0),
         weather=WeatherConfig(latitude=DEMO_LAT, longitude=DEMO_LON, label="DEMO"),
         clocks=DEMO_CLOCKS,
+        agenda=AgendaConfig(calendars=DEMO_CALENDARS),
+        # Pinned, so the pictures come out the same on whatever machine runs
+        # this. Without it the agenda page read `now` in the author's own
+        # zone: a 23:20 shot meant to show the next-day summary landed at
+        # 01:20 the following morning and drew an empty column instead.
+        timezone="UTC",
     )
+
+
+def demo_events(day: datetime) -> list[Event]:
+    """A day with something behind, something running and something coming."""
+    def at(hour: int, minute: int = 0) -> datetime:
+        return day.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+    return [
+        Event(at(9, 30), at(10, 0), "personal", (120, 235, 85), "STANDUP"),
+        Event(at(11, 0), at(12, 30), "clients", (255, 80, 70), "WORKSHOP"),
+        Event(at(13, 0), at(13, 45), "work", (70, 170, 255), "REVIEW"),
+        Event(at(14, 0), at(15, 0), "work", (70, 170, 255), "DEMO"),
+        Event(at(16, 0), at(16, 30), "personal", (120, 235, 85), "GYM"),
+        Event(at(19, 0), at(21, 0), "home", (185, 130, 255), "DINNER"),
+    ]
 
 
 def demo_weather(now: datetime, *, is_day: bool = True, code: int = 0) -> Weather:
@@ -115,12 +149,30 @@ def main() -> int:
     day = context(midday)
     dark = context(night, is_day=False)
 
+    # Twenty past two: the morning is behind, the two o'clock is running and
+    # the gym is close enough to name in the header.
+    afternoon = midday.replace(hour=14, minute=20)
+    agenda_now = pages.PageContext(config=config, now=afternoon,
+                                   location=(DEMO_LAT, DEMO_LON),
+                                   events=demo_events(afternoon))
+    # Late enough that today is spent and the page switches to the next day
+    # that has anything in it.
+    bedtime = midday.replace(hour=23, minute=20)
+    tomorrow = bedtime + timedelta(days=1)
+    agenda_late = pages.PageContext(config=config, now=bedtime,
+                                    location=(DEMO_LAT, DEMO_LON),
+                                    events=[],
+                                    ahead=(tomorrow.date(),
+                                           demo_events(tomorrow)))
+
     singles = {
         "page-world-clocks": shot("world_clocks", day),
         "page-weather-now": shot("weather_now", day),
         "page-weather-night": shot("weather_now", dark),
         "page-trend": shot("trend", day),
         "page-forecast": shot("forecast", day),
+        "page-agenda": shot("agenda", agenda_now),
+        "page-agenda-tomorrow": shot("agenda", agenda_late),
     }
     alerts = [
         Alert("storm", 2, 85, "STORM", "%"),
@@ -140,7 +192,8 @@ def main() -> int:
         image.save(OUT / f"{name}.png")
 
     contact_sheet([singles[n] for n in (
-        "page-world-clocks", "page-weather-now", "page-trend", "page-forecast",
+        "page-world-clocks", "page-agenda", "page-weather-now", "page-trend",
+        "page-forecast",
     )]).save(OUT / "pages.png")
     contact_sheet([singles[f"alert-{k}"]
                    for k in ("storm", "rain", "wind", "frost")]).save(

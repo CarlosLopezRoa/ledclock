@@ -1,6 +1,6 @@
 # ledclock
 
-<img src="docs/pages.png" alt="Four pages on the panel: world clocks, current weather, a temperature trend, a three-day forecast" width="100%">
+<img src="docs/pages.png" alt="Five pages on the panel: world clocks, today's agenda, current weather, a temperature trend, a three-day forecast" width="100%">
 
 Turns a **B.K.Light "LED pixel board" (MAL ACT1026)** — a €15 32×32 RGB matrix
 that only speaks to a phone app — into a desk display driven from macOS over
@@ -9,8 +9,9 @@ Bluetooth Low Energy.
 The panel's own firmware offers a clock and some animations. `ledclock` ignores
 all of it: it renders its own 32×32 frames on the Mac and pushes them as PNGs,
 so the display can show anything Python can draw. World clocks that dim where
-it is night, real weather, a temperature graph, storm warnings, the phase of
-the moon and where it currently sits in the sky.
+it is night, today's calendar as a column you can read from across the room,
+real weather, a temperature graph, storm warnings, the phase of the moon and
+where it currently sits in the sky.
 
 Weather comes from [Open-Meteo](https://open-meteo.com) — free, no API key. The
 sun and moon are computed locally, so those pages keep working with no network.
@@ -20,6 +21,8 @@ sun and moon are computed locally, so those pages keep working with no network.
 | | |
 |---|---|
 | <img src="docs/page-world-clocks.png" width="150"> | **World clocks.** Four zones, sorted west to east by live UTC offset. Rows where it is night are dimmed against *that city's* own sunrise and sunset. |
+| <img src="docs/page-agenda.png" width="150"> | **Agenda.** Today as a calendar column: time runs downwards, each event is a box as tall as it is long, in its calendar's colour. Hours label the left channel, the past is dimmed, and a three-pixel mark on the right edge is now. The header names what is running or imminent, and counts the minutes down. |
+| <img src="docs/page-agenda-tomorrow.png" width="150"> | **…and at bedtime**, once the day is spent, it becomes a plain list of the next day that has anything in it — hours, names and colours, no boxes. A Friday night shows Monday. |
 | <img src="docs/page-weather-now.png" width="150"> | **Weather now.** Condition, temperature to a tenth, and a configurable 2×2 grid of stats. The arc under the temperature is the sun's path through today. |
 | <img src="docs/page-weather-night.png" width="150"> | **After dark** the hero becomes the real phase of the moon, and the arc becomes the moon's actual track — east on the left, west on the right, height is altitude. The dot only appears when the moon is genuinely above the horizon. |
 | <img src="docs/page-trend.png" width="150"> | **Trend.** 24 hours centred on now. Colour is temperature on an absolute ramp; the band underneath is the chance of rain, yellow under thunder. |
@@ -45,6 +48,7 @@ the panel is unreachable.
 - macOS (Apple Silicon or Intel), Python 3.11+
 - A B.K.Light ACT1026 or another panel speaking the iPixel Color protocol
 - USB power for the panel, 5 V and 2 A or better
+- Calendar access, but only if you want the agenda page — see below
 
 ## Install
 
@@ -274,6 +278,73 @@ count suggests: the labels are `STORM`, `RAIN`, `WIND` and `FROST`, and they
 are English for the same reason the agenda's weekdays are — `strftime` gives
 `THU`, and a panel that said `THU` on one page and `JUE` on the next was
 simply inconsistent.
+
+## The agenda page
+
+Today as a calendar column, which is how a day is read everywhere else, and
+the layout was argued out in renders rather than in prose — most of what
+follows is a record of what the panel rejected.
+
+```yaml
+display:
+  pages: [world_clocks, agenda, weather_now, trend, forecast]
+
+agenda:
+  calendars:
+    - Home
+    - {name: Work, color: "#46AAFF"}
+  minutes_per_row: 15
+  summary_after: "23:00"
+```
+
+**A fixed scale beats a wider horizon.** The first version stretched the
+window between two and a half and eight hours to reach whatever was coming.
+It showed more, and it was worse: the scale moved under you, and at the
+eight-hour end a half-hour meeting drew as a pixel and a half. Fifteen
+minutes a row is six hours, always, and a half-hour meeting is always two
+rows. The cost is real and was measured — a fixed six-hour window leaves 19%
+of a sample week's pending events off the bottom of the column.
+
+**The hour labels are a left channel, not ticks.** Ticks said where the hours
+were without saying which hour. Two digits of the 3×5 font fit in the eight
+pixels the boxes give up.
+
+**Now is three pixels at the right edge, not a rule across the column.** Drawn
+full width it crossed the hour digits and dirtied them. Three pixels against
+black are genuinely easy to miss, which is the trade: against a box, where it
+usually falls, it reads fine.
+
+**The header stays quiet.** A name three hours out is noise. It shows the date
+until an event is running or less than an hour away, and then the name, with
+the minutes remaining on the right once they are under sixty. Those minutes
+round *up*: floor division displayed "1" with 1 min 59 s to go, which is a
+lie you act on.
+
+**Calendar's colours are for a screen, not for LEDs.** Copied literally,
+Calendar's blue arrives at the panel's gain as `(0, 82, 154)` and reads as
+unlit. Each calendar takes an override; a bare name keeps whatever Calendar
+gives it.
+
+### Permission, and what leaves the Mac
+
+Nothing. Events are read through EventKit on the machine itself and drawn;
+there is no network path for them anywhere in this project.
+
+macOS attributes calendar permission to the **app bundle**, exactly as it does
+Bluetooth — so `NSCalendarsFullAccessUsageDescription` lives in
+`LedClock.app/Contents/Info.plist`, and the page works through
+`./bin/ledclock` and not through a bare `python -m ledclock`, which asks on
+the terminal's behalf instead. That is a different grant and looks like a
+mystery denial. Access is requested once and never waited for: blocking the
+render loop on a modal dialog would freeze the panel on whatever frame it
+happened to be showing.
+
+Leave `agenda.calendars` empty, or delete the block, and nothing is read and
+nothing is asked for.
+
+The page draws the opening letters of real event titles, so **the screenshots
+in `docs/` are invented** — calendars, meetings and all — by
+`tools/make_screenshots.py`, for the same reason the weather in them is.
 
 ## Brightness, day and night
 

@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from dataclasses import dataclass
-from datetime import datetime, timedelta
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from . import icons, moon, sun
@@ -76,6 +76,12 @@ class PageContext:
     location: tuple[float, float] | None = None
     #: The warning the `alert` page should draw, if any.
     alert: Alert | None = None
+    #: Today's events, already filtered to the configured calendars.
+    events: list = field(default_factory=list)
+    #: The next day with anything in it, as (date, events), or None. The
+    #: column has nothing to say once today is spent — there is no "now" to
+    #: place in it — so the page shows this instead.
+    ahead: tuple | None = None
 
     def local_now(self) -> datetime:
         if self.config.timezone:
@@ -783,6 +789,277 @@ def alert(ctx: PageContext) -> Canvas:
 
 
 #: Everything the carousel can show. Add a function here to add a page.
+
+# -- the agenda ------------------------------------------------------------
+#
+# A day column, the way a calendar app draws one: time runs downwards, each
+# event is a box as tall as it is long, and a white line marks now.
+#
+# An earlier version laid the day out horizontally as a four-pixel band. It
+# was rejected on sight — a horizontal strip reads as a progress bar, not as
+# a day, and there is nowhere to put a name.
+#
+# Two behaviours earn their complexity, and both came from drawing the thing
+# against real days rather than invented ones:
+#
+#   * The window stretches to fit. Fixed at six hours it looked right on a
+#     busy invented day and wasted the panel on a real one — at half past
+#     three, with the previous meeting over at half one, twenty-four rows
+#     held a single box.
+#   * The line is never flush against the header. It belongs near the top
+#     when nothing has happened yet, but touching the divider it reads as
+#     part of it.
+
+AGENDA_DIM = (64, 68, 78)
+#: The minutes-to-go in the header. Bright on purpose: it is the one number
+#: on the page that changes while you look at it.
+AGENDA_INK = (245, 248, 255)
+AGENDA_NOW = (255, 255, 255)
+#: Width of the now-mark, at the right edge.
+AGENDA_MARK = 3
+#: Rows of tomorrow's list that fit above the "and more" line.
+AGENDA_SUMMARY_ROWS = 3
+#: The hour labels. These began much dimmer, on the reasoning that a scale
+#: should not compete with the content — but at the gain this panel runs at,
+#: a dim grey lands near (58, 61, 69) and simply cannot be read across a
+#: room. Legibility won.
+AGENDA_HOUR = (185, 192, 208)
+
+#: Rows the column occupies: the header takes the first five and a divider
+#: takes the sixth.
+AGENDA_TOP, AGENDA_BOTTOM = 7, 31
+#: Left channel, holding the hour labels. Two digits of the 3x5 font reach
+#: x=6, so eight leaves a single pixel of air before the boxes — nine left
+#: two, which bought nothing and cost the boxes a column.
+#:
+#: Tick marks lived here first and said nothing about *which* hour, so the
+#: column had shape but no anchor.
+AGENDA_GUTTER = 8
+#: How far a finished event is dimmed. Still legible as shape, never
+#: mistakable for something still to come.
+AGENDA_PAST = 0.35
+
+
+def _agenda_span(ctx: PageContext, now: datetime) -> tuple[float, float]:
+    """Hours of past to show, and hours the whole column spans.
+
+    The length is fixed, from the configured minutes per row: a half-hour
+    meeting has to be the same two rows at eight in the morning as at six in
+    the evening, or the column stops being a scale and becomes a diagram.
+
+    Only the line moves. It sits at `back / window` down the column, so
+    "never past half way" is a rule about those two together — not, as a
+    first attempt had it, a cap on the hours of past alone, which put the
+    line at seventy per cent on a crowded morning.
+
+    What this gives up is reach: beyond the window there is nothing, so about
+    a fifth of the day's remaining events are not drawn until they come
+    closer. The scale was judged worth more than the horizon.
+    """
+    config = ctx.config.agenda
+    window = (AGENDA_BOTTOM - AGENDA_TOP) * config.minutes_per_row / 60
+
+    behind = [e for e in ctx.events if e.end <= now]
+    if behind:
+        oldest = min(e.start for e in behind)
+        wanted = (now - oldest).total_seconds() / 3600
+    else:
+        wanted = 0.0
+    back = max(config.look_back_min_hours, min(wanted, window / 2))
+    return back, window
+
+
+def _agenda_label_every(window: float) -> int:
+    """How many hours between labels, given how much room an hour has.
+
+    A fixed rule does not work across a window that stretches from two and a
+    half hours to eight: every two hours left the short window showing a
+    single number, which is an anchor easy to miss, and every hour would
+    overlap itself on the long one.
+    """
+    rows_per_hour = (AGENDA_BOTTOM - AGENDA_TOP) / window
+    if rows_per_hour >= 7:
+        return 1
+    return 2 if rows_per_hour >= 3.5 else 3
+
+
+def _agenda_row(moment: datetime, start: datetime, window: float) -> float:
+    hours = (moment - start).total_seconds() / 3600
+    return AGENDA_TOP + (hours / window) * (AGENDA_BOTTOM - AGENDA_TOP)
+
+
+def _agenda_fits(left: int, right: int = 32) -> int:
+    """How many 3x5 glyphs fit between two columns.
+
+    Each advances four pixels but only paints three, so the last one needs no
+    trailing pixel — counting every glyph as four undercounted the room by
+    one whenever the space divided awkwardly.
+    """
+    return max(0, (right - left + 1) // 4)
+
+
+def _agenda_minutes_until(start: datetime, now: datetime) -> int:
+    """Minutes to go, rounded up, so the count never promises less time.
+
+    Floor division is the obvious thing and it is wrong here: with a minute
+    and fifty-nine seconds to go it printed "1", and anything under a minute
+    printed "0" — a nought that then sat there for the best part of a minute
+    saying nothing. Rounded up, "1" means "under a minute, now-ish", which is
+    what someone reading a countdown takes it to mean.
+    """
+    seconds = (start - now).total_seconds()
+    return -int(-seconds // 60)
+
+
+def _agenda_header(canvas: Canvas, nxt, now: datetime) -> None:
+    """The next thing by name — but only once it is nearly here.
+
+    A name three hours out is noise: it will have rotated past a dozen times
+    before it matters, and by then it has stopped being read. So the header
+    stays quiet until the thing is inside the hour or already running, and
+    shows the date instead. The minutes appear alongside, because they are
+    the one thing the column cannot express.
+
+    The colour bar is two pixels wide because one, beside a glyph, reads as
+    a 1: an early header showed 8:30 and it looked like 18:30.
+    """
+    minutes = None if nxt is None else _agenda_minutes_until(nxt.start, now)
+    close = nxt is not None and minutes < 60      # running counts: minutes <= 0
+
+    if not close:
+        canvas.text(1, 0, now.strftime("%a").upper(), FONT_3x5, AGENDA_HOUR)
+        canvas.text_right(31, 0, now.strftime("%d"), FONT_3x5, AGENDA_HOUR)
+        return
+
+    canvas.rect(0, 0, 2, 5, nxt.color)
+    countdown = str(minutes) if minutes > 0 else ""
+    if countdown:
+        # One colour throughout. A red threshold was tried and dropped: the
+        # number shrinking towards zero already says how close it is, and a
+        # second signal saying the same thing only competes for attention
+        # with the colour bar, which carries information nothing else does.
+        canvas.text_right(31, 0, countdown, FONT_3x5, AGENDA_INK)
+
+    # Whatever is left over, rather than a fixed seven: the glyphs are four
+    # pixels with their tracking, and the gap keeps name and count apart.
+    # Same reasoning on the other side: the countdown is a separate field, so
+    # it keeps a pixel of its own beyond the font's tracking.
+    canvas.text(3, 0,
+                (nxt.title or nxt.calendar)[
+                    :_agenda_fits(3, 32 - (len(countdown) * 4 + 1 if countdown else 0))
+                ].upper(),
+                FONT_3x5, AGENDA_NOW)
+
+
+def _agenda_short_time(moment: datetime) -> str:
+    """Drop what can be dropped: the leading zero, and ":00" on the hour.
+
+    Worth four pixels a glyph, and most things start on the hour — which in
+    a list buys the difference between "DE" and "DEMO".
+    """
+    if moment.minute == 0:
+        return str(moment.hour)
+    return f"{moment.hour}:{moment.minute:02d}"
+
+
+def _agenda_ahead(ctx: PageContext, today: date) -> Canvas:
+    """The next day with anything in it, as a list.
+
+    Not boxes. The column exists to answer "where am I in the day", and a day
+    you are not in has no now to place — its shape says nothing while its
+    times and names say everything.
+
+    Nor necessarily tomorrow: on a Friday evening tomorrow is empty and the
+    useful answer is Monday, so the title has to name the day rather than
+    assume it.
+    """
+    canvas = Canvas()
+    canvas.hline(0, 6, 32, AGENDA_DIM)
+
+    if ctx.ahead is None:
+        canvas.text(0, 0, "AHEAD", FONT_3x5, AGENDA_HOUR)
+        canvas.text_centered(16, "CLEAR", FONT_3x5, AGENDA_DIM)
+        return canvas
+
+    day, events = ctx.ahead
+    if (day - today).days == 1:
+        canvas.text(0, 0, "TOMORROW", FONT_3x5, AGENDA_HOUR)
+    else:
+        canvas.text(0, 0, day.strftime("%a").upper(), FONT_3x5, AGENDA_HOUR)
+        canvas.text_right(31, 0, day.strftime("%d"), FONT_3x5, AGENDA_HOUR)
+
+    shown = events[:AGENDA_SUMMARY_ROWS]
+    for row, event in enumerate(shown):
+        y = 8 + row * 6
+        canvas.rect(0, y, 2, 5, event.color)
+        clock = _agenda_short_time(event.start)
+        canvas.text(3, y, clock, FONT_3x5, AGENDA_INK)
+        # Two pixels, deliberately. The font already advances one past each
+        # glyph, so a single pixel here makes the jump from the time to the
+        # name identical to the jump between two letters of the name — and
+        # "10MURPR" stops having anywhere for the eye to break. The extra
+        # pixel is what marks these as two different fields.
+        used = 3 + len(clock) * 4 + 1
+        canvas.text(used, y, (event.title or event.calendar)[:_agenda_fits(used)].upper(),
+                    FONT_3x5, AGENDA_NOW)
+
+    # Cutting the list in silence is a lie by omission: seven events showed
+    # four and looked like a four-event day.
+    hidden = len(events) - len(shown)
+    if hidden:
+        canvas.text_right(31, 8 + AGENDA_SUMMARY_ROWS * 6,
+                          f"+{hidden}", FONT_3x5, AGENDA_HOUR)
+    return canvas
+
+
+def agenda(ctx: PageContext) -> Canvas:
+    """Today as a column — or tomorrow as a list, once today is spent."""
+    canvas = Canvas()
+    now = ctx.local_now()
+
+    nxt = next((e for e in ctx.events if e.end > now), None)
+    # Spent is not enough on its own: at half past seven the evening is still
+    # ahead and the next working day is not yet the useful thing to read.
+    if nxt is None and now.time() >= ctx.config.agenda.summary_after:
+        return _agenda_ahead(ctx, now.date())
+    _agenda_header(canvas, nxt, now)
+    canvas.hline(0, 5, 32, AGENDA_DIM)
+
+    back, window = _agenda_span(ctx, now)
+    visible_start = now - timedelta(hours=back)
+
+    every = _agenda_label_every(window)
+    hour = visible_start.replace(minute=0, second=0, microsecond=0)
+    while hour <= visible_start + timedelta(hours=window):
+        y = _agenda_row(hour, visible_start, window)
+        if AGENDA_TOP <= y and y + 5 <= AGENDA_BOTTOM and hour.hour % every == 0:
+            canvas.text(0, int(y), f"{hour.hour:02d}", FONT_3x5, AGENDA_HOUR)
+        hour += timedelta(hours=1)
+
+    for event in ctx.events:
+        top = _agenda_row(event.start, visible_start, window)
+        bottom = _agenda_row(event.end, visible_start, window)
+        if bottom < AGENDA_TOP or top > AGENDA_BOTTOM:
+            continue
+        top, bottom = max(AGENDA_TOP, top), min(AGENDA_BOTTOM, bottom)
+        colour = event.color
+        if event.end <= now:
+            colour = tuple(int(c * AGENDA_PAST) for c in colour)
+        canvas.rect(AGENDA_GUTTER, int(top), 32 - AGENDA_GUTTER,
+                    max(1, int(round(bottom - top))), colour)
+
+    # A mark at the right edge rather than a rule across the column. Drawn
+    # full width it crossed the hour labels and dirtied the digits, which is
+    # the one thing in the channel that has to stay crisp.
+    #
+    # The cost, and it is a real one: three pixels against black are easy to
+    # miss, and this used to be the first thing the eye found. Against a box
+    # it reads fine, and that is the trade this makes deliberately.
+    canvas.rect(32 - AGENDA_MARK, int(_agenda_row(now, visible_start, window)),
+                AGENDA_MARK, 1, AGENDA_NOW)
+    return canvas
+
+
 PAGES = {
     "clock_local": clock_local,
     "world_clocks": world_clocks,
@@ -790,6 +1067,7 @@ PAGES = {
     "forecast": forecast,
     "trend": trend,
     "alert": alert,
+    "agenda": agenda,
 }
 
 

@@ -132,11 +132,53 @@ class AlertConfig:
 
 
 @dataclass(frozen=True)
+class AgendaCalendar:
+    """One calendar worth showing, and the colour to show it in."""
+
+    name: str
+    #: None means "use the colour the Calendar app gives it". An override
+    #: exists because Calendar's palette is chosen for a bright screen: two
+    #: accounts can land on near-identical reds, and its pale cyan is hard to
+    #: tell from the white now-marker at the gain this panel runs at.
+    color: RGB | None = None
+
+
+@dataclass(frozen=True)
+class AgendaConfig:
+    calendars: list[AgendaCalendar] = field(default_factory=list)
+    #: How long one row of the column is worth. Fifteen minutes over
+    #: twenty-four rows makes the window six hours, always — a half-hour
+    #: meeting is two rows whatever else the day holds.
+    #:
+    #: It replaced a window that stretched between two and a half and eight
+    #: hours to reach whatever was coming. That reached further, at the cost
+    #: of a scale that changed under you: at the eight-hour end a row was
+    #: twenty minutes and half an hour drew as a pixel and a half.
+    minutes_per_row: float = 15.0
+    #: Always keep this much of the past on screen, so the now-line is near
+    #: the top rather than welded to the header divider.
+    look_back_min_hours: float = 0.5
+    #: How close an event has to be before it jumps the carousel, the way a
+    #: new weather warning does.
+    imminent_minutes: float = 10.0
+    refresh_seconds: float = 120.0
+    #: Before this hour the page keeps showing today, spent or not. The
+    #: summary of the next day is a thing to read on the way to bed, not at
+    #: half past seven with the evening still ahead.
+    summary_after: time = time(23, 0)
+    #: How many days ahead to look for the next day that has anything in it.
+    #: Four carries a Friday evening across to Monday, and a Thursday one
+    #: across a long weekend.
+    look_ahead_days: int = 4
+
+
+@dataclass(frozen=True)
 class Config:
     device: DeviceConfig = field(default_factory=DeviceConfig)
     display: DisplayConfig = field(default_factory=DisplayConfig)
     weather: WeatherConfig = field(default_factory=WeatherConfig)
     alerts: AlertConfig = field(default_factory=AlertConfig)
+    agenda: AgendaConfig = field(default_factory=AgendaConfig)
     clocks: list[ClockCity] = field(default_factory=list)
     timezone: str | None = None
     path: Path | None = None
@@ -196,6 +238,68 @@ def _parse_color(raw, index: int) -> RGB:
     if len(values) != 3:
         raise ConfigError(f"color must be three numbers, got {raw!r}")
     return (int(values[0]), int(values[1]), int(values[2]))
+
+
+def _parse_agenda(raw: dict | None) -> AgendaConfig:
+    raw = raw or {}
+    calendars: list[AgendaCalendar] = []
+    for index, entry in enumerate(raw.get("calendars") or []):
+        # A bare string is the common case: use the calendar's own colour.
+        if isinstance(entry, str):
+            calendars.append(AgendaCalendar(name=entry))
+            continue
+        if not isinstance(entry, dict):
+            raise ConfigError(
+                f"agenda.calendars[{index}] must be a name or a mapping, "
+                f"got {entry!r}"
+            )
+        name = entry.get("name")
+        if not name:
+            raise ConfigError(f"agenda.calendars[{index}] is missing 'name'")
+        colour = entry.get("color")
+        calendars.append(
+            AgendaCalendar(
+                name=str(name),
+                color=None if colour is None else _parse_color(colour, index),
+            )
+        )
+
+    per_row = float(raw.get("minutes_per_row", AgendaConfig.minutes_per_row))
+    if per_row <= 0:
+        raise ConfigError(
+            f"agenda.minutes_per_row must be above zero, got {per_row}"
+        )
+    return AgendaConfig(
+        calendars=calendars,
+        minutes_per_row=per_row,
+        look_back_min_hours=float(
+            raw.get("look_back_min_hours", AgendaConfig.look_back_min_hours)
+        ),
+        imminent_minutes=float(
+            raw.get("imminent_minutes", AgendaConfig.imminent_minutes)
+        ),
+        refresh_seconds=float(
+            raw.get("refresh_seconds", AgendaConfig.refresh_seconds)
+        ),
+        look_ahead_days=int(
+            raw.get("look_ahead_days", AgendaConfig.look_ahead_days)
+        ),
+        summary_after=_parse_hhmm(
+            raw.get("summary_after"), AgendaConfig.summary_after, "summary_after"
+        ),
+    )
+
+
+def _parse_hhmm(raw, fallback: time, field_name: str) -> time:
+    if raw is None:
+        return fallback
+    try:
+        hour, _, minute = str(raw).partition(":")
+        return time(int(hour), int(minute or 0))
+    except ValueError as exc:
+        raise ConfigError(
+            f"agenda.{field_name} must be HH:MM, got {raw!r}"
+        ) from exc
 
 
 def _parse_clocks(raw: list | None) -> list[ClockCity]:
@@ -337,11 +441,14 @@ def load(path: Path | str | None = None) -> Config:
     if not display.pages:
         raise ConfigError("display.pages is empty — nothing to show")
 
+    agenda = _parse_agenda(raw.get("agenda"))
+
     return Config(
         device=device,
         display=display,
         weather=weather,
         alerts=alerts,
+        agenda=agenda,
         clocks=clocks,
         timezone=raw.get("timezone"),
         path=resolved if resolved.exists() else None,
