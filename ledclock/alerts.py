@@ -87,9 +87,9 @@ def evaluate(weather: Weather | None, config, now: datetime) -> list[Alert]:
             kind="storm", lead_hours=_lead(now, storm.time),
             magnitude=storm.precipitation_probability or 0,
             # "TORMENTA" is 33px at 3x5 — the M alone is five wide — so it
-            # would arrive on the panel as "TORMENT". RAYOS fits, and names
+            # would arrive on the panel as "TORMENT". STORM fits, and names
             # the part you actually care about.
-            label="RAYOS", unit="%",
+            label="STORM", unit="%",
         ))
 
     gust = max(
@@ -99,7 +99,7 @@ def evaluate(weather: Weather | None, config, now: datetime) -> list[Alert]:
     if gust is not None:
         found.append(Alert(
             kind="wind", lead_hours=_lead(now, gust.time),
-            magnitude=gust.gusts, label="VIENTO",
+            magnitude=gust.gusts, label="WIND",
         ))
 
     cold = next(
@@ -108,7 +108,7 @@ def evaluate(weather: Weather | None, config, now: datetime) -> list[Alert]:
     if cold is not None:
         found.append(Alert(
             kind="frost", lead_hours=_lead(now, cold.time),
-            magnitude=cold.temperature, label="HELADA", unit="°",
+            magnitude=cold.temperature, label="FROST", unit="°",
         ))
 
     # Rain only counts as news if it is not already falling: an alert for
@@ -125,7 +125,7 @@ def evaluate(weather: Weather | None, config, now: datetime) -> list[Alert]:
             found.append(Alert(
                 kind="rain", lead_hours=_lead(now, wet.time),
                 magnitude=wet.precipitation_probability or 0,
-                label="LLUVIA", unit="%",
+                label="RAIN", unit="%",
             ))
 
     found.sort(key=lambda a: (-a.severity, a.lead_hours))

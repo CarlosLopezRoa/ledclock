@@ -800,7 +800,7 @@ class TestAlerts(unittest.TestCase):
         found = alerts.evaluate(self._weather(hours), self._config(), self.NOW)
         self.assertEqual(found[0].kind, "storm")
         self.assertEqual(found[0].lead_hours, 2)   # 11:00 base, storm at 14:00
-        self.assertEqual(found[0].label, "RAYOS")
+        self.assertEqual(found[0].label, "STORM")
 
     def test_gusts_alert_only_above_the_threshold(self):
         under = self._hours([(20, 0, 3, 54)] * 6)
@@ -923,10 +923,10 @@ class TestAlertPage(unittest.TestCase):
 
     def test_every_kind_renders(self):
         cases = [
-            alerts.Alert("storm", 2, 85, "RAYOS", "%"),
-            alerts.Alert("rain", 3, 70, "LLUVIA", "%"),
-            alerts.Alert("wind", 1, 78, "VIENTO"),
-            alerts.Alert("frost", 5, -2, "HELADA", "°"),
+            alerts.Alert("storm", 2, 85, "STORM", "%"),
+            alerts.Alert("rain", 3, 70, "RAIN", "%"),
+            alerts.Alert("wind", 1, 78, "WIND"),
+            alerts.Alert("frost", 5, -2, "FROST", "°"),
         ]
         for warning in cases:
             with self.subTest(kind=warning.kind):
@@ -935,7 +935,7 @@ class TestAlertPage(unittest.TestCase):
 
     def test_labels_fit_the_panel(self):
         # "TORMENTA" was 33px and arrived as "TORMENT".
-        for label in ("RAYOS", "LLUVIA", "VIENTO", "HELADA", "SIN AVISO"):
+        for label in ("STORM", "RAIN", "WIND", "FROST", "NO ALERT"):
             with self.subTest(label=label):
                 self.assertLessEqual(FONT_3x5.width(label), 32)
 

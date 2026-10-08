@@ -58,10 +58,12 @@ SELF_DIMMING = frozenset({"world_clocks"})
 #: steps far better than this reads on a lit screen.
 CLOCK_DAY_AT_NIGHT = 0.25
 
-DAYS_ES = ["LUN", "MAR", "MIE", "JUE", "VIE", "SAB", "DOM"]
-DAYS_ES_SHORT = ["LU", "MA", "MI", "JU", "VI", "SA", "DO"]
-MONTHS_ES = ["ENE", "FEB", "MAR", "ABR", "MAY", "JUN",
-             "JUL", "AGO", "SEP", "OCT", "NOV", "DIC"]
+# English throughout. Weekdays that come from strftime arrive as THU, and a
+# panel that said THU on one page and JUE on the next was simply inconsistent.
+DAYS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]
+DAYS_SHORT = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
+MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+          "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
 
 
 @dataclass(frozen=True)
@@ -345,7 +347,7 @@ def clock_local(ctx: PageContext) -> Canvas:
 
     canvas.text_centered(1, _clock_text(now), FONT_5x7, WHITE)
 
-    date_text = f"{DAYS_ES[now.weekday()]} {now.day} {MONTHS_ES[now.month - 1]}"
+    date_text = f"{DAYS[now.weekday()]} {now.day} {MONTHS[now.month - 1]}"
     canvas.text_centered(10, _fit(date_text, FONT_3x5, canvas.width), FONT_3x5, GREY)
 
     canvas.hline(4, 17, canvas.width - 8, FAINT)
@@ -469,7 +471,7 @@ def weather_now(ctx: PageContext) -> Canvas:
     canvas = Canvas()
     weather = ctx.weather
     if weather is None:
-        canvas.text_centered(12, "SIN DATOS", FONT_3x5, FAINT)
+        canvas.text_centered(12, "NO DATA", FONT_3x5, FAINT)
         return canvas
 
     current = weather.current
@@ -528,7 +530,7 @@ def forecast(ctx: PageContext) -> Canvas:
     canvas = Canvas()
     weather = ctx.weather
     if weather is None or not weather.days:
-        canvas.text_centered(12, "SIN DATOS", FONT_3x5, FAINT)
+        canvas.text_centered(12, "NO DATA", FONT_3x5, FAINT)
         return canvas
 
     column_width = 10
@@ -541,7 +543,7 @@ def forecast(ctx: PageContext) -> Canvas:
             x = origin + (column_width - font.width(text)) // 2
             canvas.text(x, y, text, font, color)
 
-        centered(DAYS_ES_SHORT[day.day.weekday()], 1, GREY)
+        centered(DAYS_SHORT[day.day.weekday()], 1, GREY)
         icon = icons.for_code(day.code, 8)
         canvas.icon(origin + (column_width - 8) // 2, 7, icon)
         centered(format_high(day.high), 17, HOT)
@@ -619,7 +621,7 @@ def trend(ctx: PageContext) -> Canvas:
     canvas = Canvas()
     weather = ctx.weather
     if weather is None or len(weather.hours) < 2:
-        canvas.text_centered(12, "SIN DATOS", FONT_3x5, FAINT)
+        canvas.text_centered(12, "NO DATA", FONT_3x5, FAINT)
         return canvas
 
     half = timedelta(hours=ctx.config.display.trend_hours / 2)
@@ -631,7 +633,7 @@ def trend(ctx: PageContext) -> Canvas:
     # interpolate rather than drawing a staircase.
     readings = [_sample(weather.hours, m) for m in moments]
     if any(value is None for value in readings):
-        canvas.text_centered(12, "SIN DATOS", FONT_3x5, FAINT)
+        canvas.text_centered(12, "NO DATA", FONT_3x5, FAINT)
         return canvas
 
     now_column = (columns - 1) // 2
@@ -750,7 +752,7 @@ def alert(ctx: PageContext) -> Canvas:
     canvas = Canvas()
     warning = ctx.alert
     if warning is None:
-        canvas.text_centered(12, "SIN AVISO", FONT_3x5, FAINT)
+        canvas.text_centered(12, "NO ALERT", FONT_3x5, FAINT)
         return canvas
 
     color = ALERT_COLORS.get(warning.kind, WHITE)

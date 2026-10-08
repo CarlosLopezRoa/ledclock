@@ -268,9 +268,12 @@ page on and off at every refresh, so alerts latch: once raised they stay for
 0% precipitation probability, so an alert wants both a wet code *and* a real
 chance. Rain already falling is not an alert either — you can hear it.
 
-Labels are constrained by the 32-pixel width: `TORMENTA` measures 33px (its M
-alone is five wide) and arrived on the panel as `TORMENT`, so the storm alert
-says `RAYOS`.
+Labels are constrained by the 32-pixel width. `M` and `W` are five pixels
+wide where everything else is three, so a word is not as long as its letter
+count suggests: the labels are `STORM`, `RAIN`, `WIND` and `FROST`, and they
+are English for the same reason the agenda's weekdays are — `strftime` gives
+`THU`, and a panel that said `THU` on one page and `JUE` on the next was
+simply inconsistent.
 
 ## Brightness, day and night
 

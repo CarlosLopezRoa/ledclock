@@ -123,10 +123,10 @@ def main() -> int:
         "page-forecast": shot("forecast", day),
     }
     alerts = [
-        Alert("storm", 2, 85, "RAYOS", "%"),
-        Alert("rain", 3, 70, "LLUVIA", "%"),
-        Alert("wind", 1, 78, "VIENTO"),
-        Alert("frost", 5, -2, "HELADA", "°"),
+        Alert("storm", 2, 85, "STORM", "%"),
+        Alert("rain", 3, 70, "RAIN", "%"),
+        Alert("wind", 1, 78, "WIND"),
+        Alert("frost", 5, -2, "FROST", "°"),
     ]
     for warning in alerts:
         singles[f"alert-{warning.kind}"] = shot(
