@@ -39,7 +39,7 @@ except ImportError:  # pragma: no cover - depends on the host
 
 #: Seconds between run-loop slices. macOS gives only a few seconds of warning
 #: before sleeping, so this has to be well under that.
-PUMP_INTERVAL = 0.5
+PUMP_INTERVAL = 0.2
 #: How long each slice may spend draining the run loop.
 PUMP_SLICE = 0.02
 
@@ -73,12 +73,15 @@ def observe(on_sleep: Callable[[], None], on_wake: Callable[[], None], *,
             include_screens: bool = True) -> bool:
     """Register for sleep/wake. Returns False when unsupported.
 
-    `include_screens` also treats the display going dark as sleep, and that
-    is not belt-and-braces — it is the only reliable warning of the two.
-    Observed on this machine: macOS tore Bluetooth down *before* posting
-    NSWorkspaceWillSleepNotification, so the handoff found the panel already
-    unreachable 110 ms after the notification arrived. The screen sleeps
-    minutes earlier, while the radio is still up.
+    `include_screens` also treats the display going dark as sleep, which was
+    meant to be the early warning: the screen sleeps minutes before the
+    machine does, while the radio is still up.
+
+    It does not arrive. Across 47 sleeps in the log, the only notifications
+    ever seen are WillSleep and DidWake — the screen ones never fired once.
+    So the real budget is whatever WillSleep buys, measured at about three
+    seconds before Bluetooth goes down, and the handoff has to fit in that
+    rather than rely on a warning that does not come.
 
     It also matches intent: a dark screen means nobody is at the desk, which
     is exactly when the panel should be showing a clock that keeps time on

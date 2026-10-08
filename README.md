@@ -463,19 +463,41 @@ all, so it never creates a link that is about to be killed uncleanly.
 If the panel does end up silent, the log says so after a few fruitless
 attempts and names the fix: unplug its USB for a few seconds.
 
-### The sleep handoff is a race, and macOS does not always lose it slowly
+### The sleep handoff is a race, and the early warning never came
 
 `NSWorkspaceWillSleepNotification` is not a dependable warning. One night it
 arrived 18 seconds before Bluetooth went down — plenty. The next, Bluetooth
 was *already* gone: the handoff ran 110 ms after the notification and found
 the panel unreachable.
 
-So the daemon also treats the **display** going dark as sleep
-(`device.handoff_on_screen_sleep`, on by default). The screen sleeps minutes
-before the system does, while the radio still works, and it means the same
-thing in practice — nobody is at the desk, so the panel may as well be showing
-a clock that keeps time on its own. Set it to `false` to keep the carousel
-running while you are away.
+The intended answer was to treat the **display** going dark as sleep as well
+(`device.handoff_on_screen_sleep`, on by default): the screen sleeps minutes
+before the system does, while the radio still works. It was worth trying, and
+it does not work. Counted over 47 sleeps in the log, the only notifications
+that have *ever* arrived are `WillSleep` and `DidWake`; the screen ones have
+not fired once. The option is still there, and still means the right thing,
+but nothing should be designed around it.
+
+So the real budget is whatever `WillSleep` buys, and on this machine that is
+about 1.4 seconds before the process freezes. Two things had to change to fit
+inside it.
+
+**Cancel the carousel; do not ask it to notice.** The `awake` check sat at the
+top of the carousel loop, so a notification landing mid-render was simply
+never seen — the handoff ran on 1 sleep out of 16. `on_sleep` now cancels the
+driver task outright, and the supervisor does the handoff in one place as the
+`CancelledError` unwinds.
+
+**Never round-trip the radio on the way out.** `disconnect()` called
+`stop_notify()` first, which is a full GATT exchange, and the teardown took
+*five minutes* — nowhere near 1.4 seconds. Dropping it took the handoff to
+70 ms. The subscription dies with the connection anyway.
+
+Since both landed, the "panel was not found" failures that dominated the log
+— 8590 of them against 84 genuine ack losses — have dropped to roughly one a
+day. They were never a radio problem: they were this bug, seen from the other
+side. A sleep without a clean GATT teardown leaves the panel believing it is
+still connected, and a connected peripheral stops advertising.
 
 ### Two things an overnight run taught us
 

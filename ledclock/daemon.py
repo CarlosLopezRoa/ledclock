@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import signal
 from contextlib import suppress
 from dataclasses import replace
@@ -46,6 +47,13 @@ CONNECT_TIMEOUT = 45.0
 MISSING_HINT_AFTER = 4
 #: How often to re-check the clock while the panel is sleeping.
 ASLEEP_POLL = 30.0
+
+
+#: How long the handoff may take. macOS allows roughly three seconds between
+#: announcing sleep and cutting Bluetooth; leaving room for the disconnect
+#: matters more than completing the handoff, because it is the disconnect that
+#: stops the panel believing it is still connected.
+HANDOFF_TIMEOUT = 1.5
 
 
 class Suspended(Exception):
@@ -157,6 +165,16 @@ class Daemon:
         #: slept out the rest of its dwell while macOS suspended, and the
         #: handoff to the panel's own clock never ran.
         self.nudge = asyncio.Event()
+        #: The carousel task, so that sleep can interrupt it mid-transfer.
+        #: macOS gives about three seconds between announcing sleep and tearing
+        #: Bluetooth down — measured, not assumed: every one of the 47 sleeps in
+        #: the log is followed by a lost link within a few seconds. A PNG
+        #: transfer takes longer than that, so a handoff that waits politely for
+        #: the current frame to finish never runs at all.
+        self._driver: asyncio.Task | None = None
+        #: When the sleep notification arrived, for reporting how much of the
+        #: budget each step of the handoff actually costs.
+        self._sleeping_since: float | None = None
 
     # -- external signals ---------------------------------------------------
     def request_stop(self) -> None:
@@ -166,6 +184,19 @@ class Daemon:
     def on_sleep(self) -> None:
         self.awake.clear()
         self.nudge.set()
+        # Cancelling is the whole point: nudge only helps if the loop is
+        # waiting on it, and when the notification lands mid-frame it is not.
+        #
+        # The clock is started here rather than guessed at. The whole handoff
+        # has to fit between this notification and the process being frozen,
+        # and the only way to know whether it does is to measure it on the
+        # machine it runs on: the first attempt at this fix looked correct and
+        # still lost the panel, because the time went somewhere nobody had
+        # timed.
+        self._sleeping_since = time.monotonic()
+        driver = self._driver
+        if driver is not None and not driver.done():
+            driver.cancel()
 
     def on_wake(self) -> None:
         self.awake.set()
@@ -190,6 +221,27 @@ class Daemon:
         except (IPixelError, BleakError, OSError, TimeoutError) as exc:
             # The link is often already gone by the time we get here.
             log.warning("could not hand the panel off: %s", exc)
+
+    def _since_sleep(self) -> str:
+        if self._sleeping_since is None:
+            return "?"
+        return f"{time.monotonic() - self._sleeping_since:.2f}s"
+
+    async def _hand_over(self, panel: IPixel) -> None:
+        """Release the panel and drop the link, inside the sleep budget.
+
+        Bounded because there are only about three seconds before macOS tears
+        Bluetooth down, and an unbounded write here would spend all of them
+        and still leave the panel holding a stale link — which is the exact
+        failure this is meant to prevent.
+        """
+        log.info("handing over at %s into the sleep", self._since_sleep())
+        try:
+            await asyncio.wait_for(self.release(panel), timeout=HANDOFF_TIMEOUT)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            log.warning("no time to hand the panel off; dropping the link")
+        log.info("dropping the link at %s; disconnect starts now",
+                 self._since_sleep())
 
     # -- the control surface ------------------------------------------------
     def handlers(self) -> dict:
@@ -382,14 +434,15 @@ class Daemon:
             self.nudge.clear()
 
             if not self.awake.is_set():
-                # Hand over, then let go of the link entirely. Holding it
-                # across a sleep is what left the panel unreachable: the Mac
-                # side dies without a GATT teardown, the panel keeps believing
-                # it is connected, and a connected peripheral stops
-                # advertising — so nothing can find it again, sometimes until
-                # it is unplugged.
-                log.info("the Mac is going away — handing the panel over")
-                await self.release(panel)
+                # Let go of the link entirely. Holding it across a sleep is
+                # what left the panel unreachable: the Mac side dies without a
+                # GATT teardown, the panel keeps believing it is connected, and
+                # a connected peripheral stops advertising — so nothing can
+                # find it again, sometimes until it is unplugged.
+                #
+                # The handing-over itself belongs to the supervisor, which is
+                # reached both from here and from being cancelled mid-frame.
+                # Doing it in both places would race.
                 raise Suspended
 
             now = datetime.now(timezone.utc)
@@ -513,13 +566,27 @@ class Daemon:
                     self.linked = True
                     delay = RECONNECT_MIN
                     missing = 0
-                    await self.drive(panel)
+                    self._driver = asyncio.create_task(
+                        self.drive(panel), name="carousel"
+                    )
+                    try:
+                        await self._driver
+                    finally:
+                        self._driver = None
                     # Only reached on a clean stop, while still connected.
                     await self.release(panel)
                 except asyncio.CancelledError:
-                    raise
+                    # Sleep cancels the carousel to cut a transfer short. Any
+                    # other cancellation is a real shutdown and must propagate.
+                    if self.awake.is_set() or self.stop.is_set():
+                        raise
+                    log.info("the Mac is going away — handing the panel over")
+                    await self._hand_over(panel)
+                    delay = RECONNECT_MIN
+                    continue
                 except Suspended:
-                    log.info("dropping the link so the panel keeps advertising")
+                    log.info("the Mac is going away — handing the panel over")
+                    await self._hand_over(panel)
                     delay = RECONNECT_MIN
                     continue
                 except (IPixelError, BleakError, OSError, TimeoutError) as exc:
@@ -551,6 +618,10 @@ class Daemon:
                 finally:
                     self.linked = False
                     await panel.disconnect()
+                    if self._sleeping_since is not None:
+                        log.info("link down at %s into the sleep",
+                                 self._since_sleep())
+                        self._sleeping_since = None
         finally:
             await controller.stop()
             for task in (refresher, pump):

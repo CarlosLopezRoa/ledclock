@@ -1461,7 +1461,7 @@ class TestHandoff(unittest.IsolatedAsyncioTestCase):
         disconnect. The panel goes on believing it is connected, and a
         connected peripheral stops advertising — so nothing can discover it
         afterwards, sometimes until it is physically unplugged. Sleeping must
-        therefore unwind out of drive() so the supervisor's finally can
+        therefore unwind out of drive() so the supervisor can hand over and
         disconnect properly while the radio is still up.
         """
         instance = self._daemon()
@@ -1469,8 +1469,93 @@ class TestHandoff(unittest.IsolatedAsyncioTestCase):
         instance.on_sleep()
         with self.assertRaises(daemon.Suspended):
             await instance.drive(panel)
-        # And it hands over on the way out.
+        # The handing-over itself belongs to the supervisor now, because that
+        # is the one path reached both from here and from being cancelled
+        # mid-frame. Doing it in both places would race.
+        self.assertEqual(panel.calls, [])
+
+    async def test_the_supervisor_is_what_hands_over(self):
+        panel = _FakePanel()
+        await self._daemon()._hand_over(panel)
         self.assertEqual(panel.calls, [("clock", 1, False)])
+
+    async def test_sleep_cancels_a_transfer_already_under_way(self):
+        """The bug this guards: fifteen sleeps in a row with no handoff at all.
+
+        Clearing `awake` is only noticed at the top of the carousel loop, and
+        macOS gives about three seconds between announcing sleep and cutting
+        Bluetooth — less than one PNG transfer. Every sleep in the log that
+        landed mid-frame therefore ran no handoff, left the panel holding a
+        stale link, and the panel stopped advertising until it was unplugged.
+        Interrupting the transfer is the only thing that fits in the budget.
+        """
+        instance = self._daemon()
+        started = asyncio.Event()
+
+        async def never_finishes():
+            started.set()
+            await asyncio.sleep(30)
+
+        instance._driver = asyncio.create_task(never_finishes())
+        await started.wait()
+        instance.on_sleep()
+        with self.assertRaises(asyncio.CancelledError):
+            await instance._driver
+
+    async def test_a_slow_handover_gives_up_instead_of_spending_the_budget(self):
+        """Disconnecting matters more than handing over.
+
+        It is the disconnect that stops the panel believing it is still
+        connected, so a handoff write that hangs must not eat the seconds the
+        disconnect needs.
+        """
+        import time as _time
+
+        class _Slow:
+            async def set_clock_mode(self, **kwargs):
+                await asyncio.sleep(30)
+
+        original = daemon.HANDOFF_TIMEOUT
+        daemon.HANDOFF_TIMEOUT = 0.05
+        try:
+            started = _time.monotonic()
+            await self._daemon()._hand_over(_Slow())  # must not raise
+            self.assertLess(_time.monotonic() - started, 5.0)
+        finally:
+            daemon.HANDOFF_TIMEOUT = original
+
+    async def test_nothing_is_asked_of_the_panel_before_disconnecting(self):
+        """The bug this guards: the panel was lost again after the first fix.
+
+        Handing over took 31 ms and fitted the budget comfortably, but
+        disconnect() then spent a full round trip on stop_notify before
+        starting the disconnect — asking the panel to stop doing something
+        that closing the link stops anyway. The process froze inside it, the
+        disconnect never ran, and the panel kept believing it was connected.
+
+        A GATT teardown implies notifications end, so nothing may be asked of
+        the panel between deciding to leave and leaving.
+        """
+        import inspect
+
+        from ledclock import ipixel
+
+        # Looking for the call, not the word: the comment explaining why it
+        # was removed mentions stop_notify, and a test that reads comments
+        # fails for the wrong reason.
+        source = inspect.getsource(ipixel.IPixel.disconnect)
+        self.assertNotIn("stop_notify(", source)
+        self.assertIn("client.disconnect()", source)
+
+    async def test_the_screen_sleep_warning_is_not_relied_on(self):
+        """It never arrives, so nothing may depend on it.
+
+        The handoff was designed around the display sleeping minutes before
+        the machine, which would have given a comfortable margin. Across 47
+        sleeps in the log, only WillSleep and DidWake ever fired. The real
+        budget is a few seconds, and HANDOFF_TIMEOUT has to respect that.
+        """
+        self.assertLessEqual(daemon.HANDOFF_TIMEOUT, 3.0)
 
     async def test_every_ble_call_has_a_ceiling(self):
         """Two overnight hangs came from unbounded CoreBluetooth calls.

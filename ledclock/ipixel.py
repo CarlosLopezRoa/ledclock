@@ -217,10 +217,15 @@ class IPixel:
         client, self._client = self._client, None
         if client is None:
             return
-        with suppress(Exception):
-            await asyncio.wait_for(
-                client.stop_notify(NOTIFY_UUID), timeout=DISCONNECT_TIMEOUT
-            )
+        # Straight to the disconnect. There used to be a stop_notify first,
+        # which is a full round trip to the panel to ask it to stop doing
+        # something that closing the link stops anyway — and the one moment
+        # this runs at is the moment there is no time to spare. Measured: the
+        # Mac announces sleep and freezes the process about a second and a
+        # half later, and a sleep spent inside that stop_notify never reached
+        # the disconnect at all. The panel then kept believing it was
+        # connected, stopped advertising, and could only be recovered by
+        # unplugging it.
         with suppress(Exception):
             await asyncio.wait_for(client.disconnect(), timeout=DISCONNECT_TIMEOUT)
         log.info("disconnected from %s", self.address)
