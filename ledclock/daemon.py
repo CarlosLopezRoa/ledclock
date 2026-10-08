@@ -535,7 +535,10 @@ class Daemon:
                                 "Unplugging its USB for a few seconds clears that.",
                                 missing,
                             )
-                    log.warning("panel link lost (%s); retrying in %.0fs", exc, delay)
+                    # A bare TimeoutError stringifies to nothing, which had been
+                    # logging itself as "panel link lost ()" — twenty-nine times.
+                    log.warning("panel link lost (%s); retrying in %.0fs",
+                                exc or type(exc).__name__, delay)
                     self.nudge.clear()
                     await _wait_for([self.stop, self.nudge], timeout=delay)
                     if self.nudge.is_set():

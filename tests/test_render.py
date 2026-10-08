@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+import unittest.mock
 from datetime import datetime, timezone
 
 from ledclock import alerts, control, daemon, icons, moon, pages, sun
@@ -1798,6 +1799,136 @@ class TestProtocol(unittest.TestCase):
     def test_short_device_info_is_rejected(self):
         with self.assertRaises(Exception):
             parse_device_info(b"\x01\x02")
+
+
+
+class TestAck(unittest.IsolatedAsyncioTestCase):
+    """The ack path, which spent a hundred and sixty-eight reconnects
+    reporting a panel that had in fact answered.
+
+    Two separate faults met here. A notification carrying a code the client
+    had no branch for was recognised as an ack and then dropped on the floor,
+    so the send waited out its whole timeout and blamed the panel for
+    silence. And a timeout was treated as a dead link, which threw away a
+    connection that the disconnect callback proves was still up — a real drop
+    releases the ack wait and surfaces as "disconnected mid-transfer".
+    """
+
+    @staticmethod
+    def _ack(code: int) -> bytearray:
+        return bytearray(b"\x05\x00\x00\x00" + bytes([code]))
+
+    def _panel(self, *codes: int):
+        """A panel that answers each write with the next code in turn."""
+        from ledclock import ipixel
+
+        panel = ipixel.IPixel("test", ack_timeout=0.5)
+        sent: list[bytes] = []
+
+        async def write(data: bytes) -> None:
+            sent.append(data)
+            panel._on_notify(None, self._ack(codes[min(len(sent) - 1,
+                                                       len(codes) - 1)]))
+
+        panel._write_raw = write
+        return panel, sent
+
+    async def test_a_window_ack_satisfies_the_send(self):
+        panel, sent = self._panel(0)
+        await panel._send(b"frame", expect_ack=True)
+        self.assertEqual(len(sent), 1)
+
+    async def test_a_final_ack_also_closes_the_transfer(self):
+        panel, _ = self._panel(3)
+        await panel._send(b"frame", expect_ack=True)
+        self.assertTrue(panel._final_ack.is_set())
+
+    async def test_an_unknown_ack_code_is_reported_not_waited_out(self):
+        """The bug: code 2 set no event, so the send sat through the full
+        ack_timeout and then reported silence from a panel that had replied
+        at once."""
+        panel, _ = self._panel(2)
+        started = asyncio.get_running_loop().time()
+        with self.assertRaises(IPixelError) as caught:
+            await panel._send(b"frame", expect_ack=True)
+        self.assertIn("ack code 2", str(caught.exception))
+        self.assertLess(asyncio.get_running_loop().time() - started, 0.4,
+                        "should answer at once, not wait out the timeout")
+
+    async def test_an_unknown_ack_code_does_not_leak_into_the_next_send(self):
+        panel, _ = self._panel(2, 0)
+        with self.assertRaises(IPixelError):
+            await panel._send(b"frame", expect_ack=True)
+        await panel._send(b"frame", expect_ack=True)
+        self.assertIsNone(panel._ack_code)
+
+    async def test_an_unacked_frame_is_resent_not_reconnected(self):
+        """Thirty-five hours of log showed thirteen live connections thrown
+        away for one missed ack, at some fifteen seconds of frozen panel
+        each."""
+        from ledclock import ipixel
+
+        panel = ipixel.IPixel("test")
+        attempts = []
+
+        async def flaky(_packet, *, expect_ack=False):
+            attempts.append(1)
+            if len(attempts) < 3:
+                raise ipixel.IPixelError("panel never acked the transfer")
+
+        panel._send = flaky
+        with unittest.mock.patch.object(
+            ipixel.IPixel, "is_connected", property(lambda self: True)
+        ):
+            await panel._send_with_retry(b"frame")
+        self.assertEqual(len(attempts), 3, "should have resent twice")
+
+    async def test_a_panel_that_balks_is_resent_to(self):
+        """An unknown code is worth another try: the window is a whole frame,
+        so a resend redraws rather than appends."""
+        from ledclock import ipixel
+
+        panel, sent = self._panel(2, 2, 0)
+        with unittest.mock.patch.object(
+            ipixel.IPixel, "is_connected", property(lambda self: True)
+        ):
+            await panel._send_with_retry(b"frame")
+        self.assertEqual(len(sent), 3)
+
+    async def test_a_dead_link_is_not_resent_to(self):
+        """Only a live link is worth resending to; a real drop has to reach
+        the supervisor so it can reconnect."""
+        from ledclock import ipixel
+
+        panel = ipixel.IPixel("test")
+        attempts = []
+
+        async def always_fails(_packet, *, expect_ack=False):
+            attempts.append(1)
+            raise ipixel.IPixelError("panel disconnected mid-transfer")
+
+        panel._send = always_fails
+        with self.assertRaises(ipixel.IPixelError):
+            await panel._send_with_retry(b"frame")
+        self.assertEqual(len(attempts), 1, "no point resending into the void")
+
+    async def test_retries_are_bounded(self):
+        from ledclock import ipixel
+
+        panel = ipixel.IPixel("test")
+        attempts = []
+
+        async def always_times_out(_packet, *, expect_ack=False):
+            attempts.append(1)
+            raise ipixel.IPixelError("panel never acked the transfer")
+
+        panel._send = always_times_out
+        with unittest.mock.patch.object(
+            ipixel.IPixel, "is_connected", property(lambda self: True)
+        ):
+            with self.assertRaises(ipixel.IPixelError):
+                await panel._send_with_retry(b"frame")
+        self.assertEqual(len(attempts), ipixel.ACK_RETRIES + 1)
 
 
 class TestCanvas(unittest.TestCase):

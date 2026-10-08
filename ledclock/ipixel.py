@@ -48,6 +48,16 @@ CONNECT_TIMEOUT = 30.0
 DISCONNECT_TIMEOUT = 10.0
 WRITE_TIMEOUT = 10.0
 
+#: How many times to resend a window the panel did not accept.
+#:
+#: A missed ack is not a broken link. The disconnect callback releases the ack
+#: wait, so a *timeout* can only be reached while the connection is still up —
+#: a genuine drop surfaces as "disconnected mid-transfer" instead. Tearing the
+#: link down on a timeout cost some fifteen seconds of frozen panel each time,
+#: and the log shows it doing that a hundred and sixty-eight times while the
+#: link was alive. Resending costs one more ack wait and usually works.
+ACK_RETRIES = 2
+
 # --- commands ---------------------------------------------------------------
 CMD_PNG = 0x0002
 CMD_GIF = 0x0003
@@ -154,6 +164,9 @@ class IPixel:
         self._client: BleakClient | None = None
         self._window_ack = asyncio.Event()
         self._final_ack = asyncio.Event()
+        #: Code of the last ack that was not a plain "window done". Set by the
+        #: notification callback and read by the send that was waiting on it.
+        self._ack_code: int | None = None
         self._frames: asyncio.Queue[bytes] = asyncio.Queue()
         self._disconnected = asyncio.Event()
 
@@ -233,6 +246,16 @@ class IPixel:
             elif code == 3:
                 self._window_ack.set()
                 self._final_ack.set()
+            else:
+                # An ack carrying a code we have no meaning for. Dropping it
+                # silently bought a full ack_timeout of dead air and then
+                # blamed the panel for saying nothing — when it had in fact
+                # answered immediately. Record it and release the waiter, so
+                # the send reports what came back and can resend.
+                self._ack_code = code
+                log.warning("panel answered with ack code %d (%s)",
+                            code, payload.hex())
+                self._window_ack.set()
             return
         self._frames.put_nowait(payload)
 
@@ -260,6 +283,7 @@ class IPixel:
         """Write one complete frame, optionally waiting for the window ack."""
         self._window_ack.clear()
         self._final_ack.clear()
+        self._ack_code = None
         await self._write_raw(data)
         if not expect_ack:
             return
@@ -269,6 +293,10 @@ class IPixel:
             raise IPixelError("panel never acked the transfer") from exc
         if self._disconnected.is_set():
             raise IPixelError("panel disconnected mid-transfer")
+        if self._ack_code is not None:
+            raise IPixelError(
+                f"panel refused the transfer (ack code {self._ack_code})"
+            )
 
     async def _request(self, data: bytes, timeout: float = 8.0) -> bytes:
         """Write a frame and return the first non-ack notification."""
@@ -370,4 +398,22 @@ class IPixel:
                 cmd.to_bytes(2, "little") + bytes([option]) + size + crc + tail + window
             )
             packet = (2 + len(body)).to_bytes(2, "little") + body
-            await self._send(packet, expect_ack=True)
+            await self._send_with_retry(packet)
+
+    async def _send_with_retry(self, packet: bytes) -> None:
+        """Push one window, resending while the link holds.
+
+        Both a silent panel and one that answers with a code we do not know
+        are worth another try: the window is a whole frame, so resending it
+        redraws rather than appends. Only a real disconnect, or an exhausted
+        retry count, reaches the supervisor and costs a reconnect.
+        """
+        for attempt in range(ACK_RETRIES + 1):
+            try:
+                await self._send(packet, expect_ack=True)
+                return
+            except IPixelError:
+                if not self.is_connected or attempt == ACK_RETRIES:
+                    raise
+                log.warning("frame not accepted; resending (%d of %d)",
+                            attempt + 2, ACK_RETRIES + 1)
