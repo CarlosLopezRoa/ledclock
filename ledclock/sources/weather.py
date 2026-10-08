@@ -82,7 +82,17 @@ class Weather:
 
 
 def _cache_path(latitude: float, longitude: float, unit: str) -> Path:
-    return CACHE_DIR / f"weather_{latitude:.4f}_{longitude:.4f}_{unit}.json"
+    """One cache file per kilometre or so, not per eleven metres.
+
+    The coordinates follow iStat's last known location, which is Wi-Fi
+    geolocation and wanders by tens of metres between updates. Keyed at four
+    decimals, nearly every update named a new file — 44 of them after six
+    weeks at one address — and a failed fetch then fell back to whichever file
+    happened to match the current jitter, once one written thirteen days
+    earlier. Open-Meteo's grid is a kilometre or more, so two decimals loses
+    nothing about the weather and keeps one house in one file.
+    """
+    return CACHE_DIR / f"weather_{latitude:.2f}_{longitude:.2f}_{unit}.json"
 
 
 def _optional(series: list, index: int):

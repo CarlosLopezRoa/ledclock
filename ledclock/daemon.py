@@ -52,6 +52,10 @@ class Suspended(Exception):
     """Unwinds the carousel so the link can be dropped before the Mac sleeps."""
 
 
+#: How soon to try the weather again after a fetch did not produce fresh data.
+RETRY_AFTER_FAILURE = 60.0
+
+
 class WeatherFeed:
     """Keeps the newest weather reading around for the render loop."""
 
@@ -62,11 +66,12 @@ class WeatherFeed:
         #: the Mac when follow_istat_location is on.
         self.location: tuple[float, float] | None = None
 
-    async def refresh(self) -> None:
+    async def refresh(self) -> bool:
+        """Fetch, and report whether what we now hold is fresh."""
         latitude, longitude, _ = self._config.weather.resolve_coordinates()
         self.location = (latitude, longitude)
         try:
-            self.current = await weather_source.fetch(
+            fresh = await weather_source.fetch(
                 latitude,
                 longitude,
                 unit=self._config.weather.unit,
@@ -74,11 +79,33 @@ class WeatherFeed:
             )
         except Exception as exc:  # network, DNS, malformed payload
             log.warning("weather refresh failed: %s", exc)
+            return False
+
+        # A failed fetch falls back to the disk cache, and the disk cache can
+        # be older than what is already in memory. Taking it anyway once
+        # replaced an hour-old forecast with a thirteen-day-old one: the trend
+        # window no longer overlapped the data, and the menu bar graph went
+        # flat until the next successful fetch. Never trade down.
+        held = self.current
+        if held is not None and fresh.fetched_at < held.fetched_at:
+            log.info(
+                "keeping weather from %.0f min ago over a cache from %.0f min ago",
+                held.age / 60,
+                fresh.age / 60,
+            )
+            return False
+        self.current = fresh
+        return not fresh.stale
 
     async def run(self) -> None:
         while True:
-            await self.refresh()
-            await asyncio.sleep(self._config.weather.refresh_seconds)
+            fresh = await self.refresh()
+            # Straight after a wake the network is usually not back yet, so
+            # the first fetch fails. Waiting the full interval before trying
+            # again left stale data on screen for ten minutes every morning.
+            await asyncio.sleep(
+                self._config.weather.refresh_seconds if fresh else RETRY_AFTER_FAILURE
+            )
 
 
 async def _wait_for(events: list[asyncio.Event], timeout: float | None) -> None:
