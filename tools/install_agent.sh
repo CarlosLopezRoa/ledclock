@@ -105,8 +105,15 @@ $PROGRAM_ARGS
     </dict>
     <key>RunAtLoad</key>
     <true/>
+    <!-- Not <true/>: that revives the job even when it exited on purpose, so
+         the menu bar's Quit did nothing but blank the graph for thirty
+         seconds and come back. SuccessfulExit=false restarts a crash and
+         respects a clean exit, which is what both of these want. -->
     <key>KeepAlive</key>
-    <true/>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
     <!-- The daemon already backs off internally; this only guards against a
          crash loop that exits instantly. -->
     <key>ThrottleInterval</key>
@@ -153,8 +160,15 @@ cat > "$MENU_PLIST" <<MENUEOF
     </dict>
     <key>RunAtLoad</key>
     <true/>
+    <!-- Not <true/>: that revives the job even when it exited on purpose, so
+         the menu bar's Quit did nothing but blank the graph for thirty
+         seconds and come back. SuccessfulExit=false restarts a crash and
+         respects a clean exit, which is what both of these want. -->
     <key>KeepAlive</key>
-    <true/>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
     <key>ThrottleInterval</key>
     <integer>30</integer>
     <key>StandardOutPath</key>

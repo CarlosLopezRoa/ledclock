@@ -565,6 +565,18 @@ launchctl kickstart -k "gui/$(id -u)/com.ledclock.daemon"   # restart after edit
 tools/install_agent.sh --uninstall
 ```
 
+Both jobs use `KeepAlive: {SuccessfulExit: false}` rather than a bare
+`KeepAlive: true`. With `true`, launchd revives a job that exited on purpose,
+so the menu bar's **Quit** did nothing but blank the graph for thirty seconds
+and bring itself back. `SuccessfulExit: false` restarts a crash and respects a
+clean exit, which is what both of these want.
+
+`kickstart -k` is enough for a code change but not always for a rebuilt
+bundle: launchd caches the code-signing identity, and after
+`tools/make_app_bundle.sh` it kept rejecting a signature that verified fine on
+disk (`OS_REASON_CODESIGNING`). A full `bootout` + `bootstrap` clears it,
+which is what re-running `tools/install_agent.sh` does.
+
 The agent runs the bundled interpreter directly, without the LaunchServices
 detour, because launchd is not an app: macOS holds the process itself
 responsible for Bluetooth, and it lives inside `LedClock.app`. If a future
