@@ -69,6 +69,36 @@ class TestTheNowLine(unittest.TestCase):
     def test_it_is_drawn_whenever_the_column_is(self) -> None:
         self.assertIsNotNone(_now_line(pages.agenda(_ctx([_event("14:00", "15:00")]))))
 
+    def test_it_never_sits_outside_an_event_that_is_running(self) -> None:
+        """The bug this guards: the mark one row below a live block.
+
+        The mark lands on floor(row(now)); the block used to be drawn at
+        floor(row(start)) with a height rounded from the span, so a block
+        covering rows 7.93 to 9.93 got two rows while the closing minutes of
+        the event genuinely mapped to row 9. It happened on a fifth of the
+        minutes any event was live, and only ever near the end of one — which
+        is exactly when the page is being looked at.
+
+        Swept minute by minute rather than spot-checked, because whether it
+        bites depends on where the block falls between two rows.
+        """
+        events = [_event("09:30", "10:00", title="STANDUP"),
+                  _event("11:00", "12:30", color=PURPLE, title="WORKSHOP"),
+                  _event("14:00", "15:00", title="REVIEW"),
+                  _event("16:10", "16:40", color=PURPLE, title="GYM")]
+        for minute in range(9 * 60, 17 * 60):
+            now = NOW.replace(hour=minute // 60, minute=minute % 60)
+            live = [e for e in events if e.start <= now < e.end]
+            if not live:
+                continue
+            canvas = pages.agenda(_ctx(events, now=now))
+            mark = _now_line(canvas)
+            self.assertIsNotNone(mark, now)
+            lit = [y for y, row in _rows(canvas).items()
+                   if y >= pages.AGENDA_TOP
+                   and row[pages.AGENDA_GUTTER] == live[0].color]
+            self.assertIn(mark, lit, f"{now:%H:%M} {live[0].title}")
+
     def test_it_survives_landing_on_an_event(self) -> None:
         """The bug this guards: it vanished exactly when something was running.
 

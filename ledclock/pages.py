@@ -888,6 +888,27 @@ def _agenda_row(moment: datetime, start: datetime, window: float) -> float:
     return AGENDA_TOP + (hours / window) * (AGENDA_BOTTOM - AGENDA_TOP)
 
 
+def _agenda_grid(start: datetime, minutes_per_row: float) -> datetime:
+    """Snap the top of the column back to a whole row of the clock.
+
+    The origin used to be `now`, which moves every minute, so a half-hour
+    meeting almost never began on a whole row and the honest height above
+    would have cost it an extra pixel most of the time. Anchored to the clock,
+    anything starting on a quarter hour lands on an exact row and the honest
+    height and the proportional one are the same number.
+
+    Snapping only ever moves the origin earlier, so the configured minimum
+    look-back still holds.
+    """
+    if minutes_per_row <= 0:
+        return start
+    midnight = start.replace(hour=0, minute=0, second=0, microsecond=0)
+    minutes = (start - midnight).total_seconds() / 60
+    return midnight + timedelta(
+        minutes=math.floor(minutes / minutes_per_row) * minutes_per_row
+    )
+
+
 def _agenda_fits(left: int, right: int = 32) -> int:
     """How many 3x5 glyphs fit between two columns.
 
@@ -1026,7 +1047,8 @@ def agenda(ctx: PageContext) -> Canvas:
     canvas.hline(0, 5, 32, AGENDA_DIM)
 
     back, window = _agenda_span(ctx, now)
-    visible_start = now - timedelta(hours=back)
+    visible_start = _agenda_grid(now - timedelta(hours=back),
+                                 ctx.config.agenda.minutes_per_row)
 
     every = _agenda_label_every(window)
     hour = visible_start.replace(minute=0, second=0, microsecond=0)
@@ -1045,8 +1067,13 @@ def agenda(ctx: PageContext) -> Canvas:
         colour = event.color
         if event.end <= now:
             colour = tuple(int(c * AGENDA_PAST) for c in colour)
+        # The rows this really covers, not a rounded count of them. The mark
+        # lands on floor(row(now)), so a block running from row 7.93 to 9.93
+        # has to own rows 7, 8 *and* 9 — a height rounded from the span gave
+        # it two, and the last minutes of a live event put the mark one row
+        # underneath its own block.
         canvas.rect(AGENDA_GUTTER, int(top), 32 - AGENDA_GUTTER,
-                    max(1, int(round(bottom - top))), colour)
+                    max(1, math.ceil(bottom) - int(top)), colour)
 
     # A mark at the right edge rather than a rule across the column. Drawn
     # full width it crossed the hour labels and dirtied the digits, which is
