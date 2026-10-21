@@ -148,6 +148,9 @@ def main() -> int:
 
     day = context(midday)
     dark = context(night, is_day=False)
+    # Broken cloud, after dark: the one condition whose daytime icon has a sun
+    # in it. Same hour as `dark`, so the phase in the two pictures matches.
+    dark_cloud = context(night, is_day=False, code=2)
 
     # Twenty past two: the morning is behind, the two o'clock is running and
     # the gym is close enough to name in the header.
@@ -169,6 +172,7 @@ def main() -> int:
         "page-world-clocks": shot("world_clocks", day),
         "page-weather-now": shot("weather_now", day),
         "page-weather-night": shot("weather_now", dark),
+        "page-weather-night-cloud": shot("weather_now", dark_cloud),
         "page-trend": shot("trend", day),
         "page-forecast": shot("forecast", day),
         "page-agenda": shot("agenda", agenda_now),

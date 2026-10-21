@@ -25,6 +25,7 @@ sun and moon are computed locally, so those pages keep working with no network.
 | <img src="docs/page-agenda-tomorrow.png" width="150"> | **…and at bedtime**, once the day is spent, it becomes a plain list of the next day that has anything in it — hours, names and colours, no boxes. A Friday night shows Monday. |
 | <img src="docs/page-weather-now.png" width="150"> | **Weather now.** Condition, temperature to a tenth, and a configurable 2×2 grid of stats. The arc under the temperature is the sun's path through today. |
 | <img src="docs/page-weather-night.png" width="150"> | **After dark** the hero becomes the real phase of the moon, and the arc becomes the moon's actual track — east on the left, west on the right, height is altitude. The dot only appears when the moon is genuinely above the horizon. |
+| <img src="docs/page-weather-night-cloud.png" width="150"> | **…and under broken cloud** the moon goes behind the cloud, where the daytime icon puts a sun. The disc is drawn small enough to clear the cloud completely — for a crescent the lit limb *is* the outer edge of the disc. |
 | <img src="docs/page-trend.png" width="150"> | **Trend.** 24 hours centred on now. Colour is temperature on an absolute ramp; the band underneath is the chance of rain, yellow under thunder. |
 | <img src="docs/page-forecast.png" width="150"> | **Forecast.** Three days: weekday, condition, high and low. |
 
@@ -242,6 +243,28 @@ could fake alone.
 
 Nothing is drawn while the sun is up — a sun parked on the horizon all night
 would say less than an empty slot, and so would a moon.
+
+### The sun that kept rising at one in the morning
+
+The hero icon follows the same idea as the arc, and had one gap in it. A clear
+sky becomes the moon after dark. Rain, snow, fog and overcast keep their own
+art, because a crisp full moon drawn while it rains would be worse than
+useless. Broken cloud fell between the two and kept the daytime icon — which
+is a sun behind a cloud. So on a partly cloudy night the panel drew a sunrise
+at one in the morning.
+
+It now gets the moon behind the same cloud, pixel for pixel the daytime one,
+in the phase the night is actually in. The disc is deliberately smaller than
+the sun it replaces — nine pixels in the hero slot, five in the corner of the
+clock page — and the cloud drops a row or two to make room, into rows that
+were blank anyway.
+
+Those sizes are the largest ones that satisfy a rule worth stating: **the disc
+must not touch the cloud at all.** For a crescent the lit limb is the
+outermost column of the disc, so a cloud one pixel further left eats the phase
+and leaves a dark blob; and at this scale the moon's grey and the cloud's grey
+sit close enough together that two adjacent pixels merge into a single shape.
+A test walks sixteen phases through both slots and counts both failures.
 
 ## Alerts
 

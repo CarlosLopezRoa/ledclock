@@ -387,6 +387,69 @@ class TestPages(unittest.TestCase):
             pages._sky_icon(raining_at_night, self.now, 16), icons.ICONS_16["rain"]
         )
 
+    @staticmethod
+    def _touching(icon: icons.Icon, cell: str) -> int:
+        """How many pixels of `cell` have a cloud pixel orthogonally next door."""
+        grid = icon.rows
+        count = 0
+        for y, row in enumerate(grid):
+            for x, value in enumerate(row):
+                if value != cell:
+                    continue
+                for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    nx, ny = x + dx, y + dy
+                    if 0 <= ny < len(grid) and 0 <= nx < len(grid[ny]):
+                        if grid[ny][nx] == "C":
+                            count += 1
+                            break
+        return count
+
+    def test_night_and_broken_cloud_puts_the_moon_behind_the_cloud(self):
+        # `partly` is the one icon outside `clear` with a sun in it, so it was
+        # the one that kept drawing a sunrise at one in the morning.
+        for size in (8, 16):
+            with self.subTest(size=size):
+                icon = pages._sky_icon(_weather(code=2, is_day=False),
+                                       self.now, size)
+                cells = "".join(icon.rows)
+                self.assertNotIn("S", cells)
+                self.assertIn("C", cells)
+                self.assertIn(moon.UNLIT, cells)
+                self.assertEqual((icon.width, icon.height), (size, size))
+
+    def test_the_cloud_never_takes_a_bite_out_of_the_phase(self):
+        """Every lit pixel of the disc survives, and so does the whole cloud.
+
+        For a crescent the lit limb *is* the outermost column of the disc, so
+        a cloud one pixel too far left would leave a shape that is no longer a
+        phase — and it would do it silently, for two nights a month.
+        """
+        for size, table in ((8, icons.ICONS_8), (16, icons.ICONS_16)):
+            disc_size, drop = icons.MOON_IN_PARTLY[size]
+            cloud = sum(row.count("C") for row in table["partly"].rows)
+            for step in range(16):
+                value = step / 16
+                with self.subTest(size=size, phase=value):
+                    disc = moon.render(disc_size, value)
+                    composed = icons.behind_cloud(disc, size, drop)
+                    self.assertEqual(
+                        sum(row.count(moon.LIT) for row in composed.rows),
+                        sum(row.count(moon.LIT) for row in disc),
+                    )
+                    self.assertEqual(
+                        sum(row.count("C") for row in composed.rows), cloud)
+                    # And they do not even touch: two pale greys side by side
+                    # at this scale merge into one shape, so the disc keeps a
+                    # pixel of black all the way round.
+                    self.assertEqual(self._touching(composed, moon.LIT), 0)
+                    self.assertEqual(self._touching(composed, moon.UNLIT), 0)
+
+    def test_daytime_broken_cloud_is_still_the_sun(self):
+        self.assertIs(
+            pages._sky_icon(_weather(code=2, is_day=True), self.now, 16),
+            icons.ICONS_16["partly"],
+        )
+
     def test_daytime_always_shows_the_condition(self):
         self.assertIs(
             pages._sky_icon(_weather(code=0, is_day=True), self.now, 16),

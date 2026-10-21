@@ -337,11 +337,22 @@ def _sky_icon(weather: Weather, now: datetime, size: int) -> icons.Icon:
     Under an overcast night sky the moon is not visible anyway, so the
     condition icon keeps the slot — a crisp full moon drawn while it rains
     would be worse than useless.
+
+    Broken cloud is the case in between, and the one that gave this away: its
+    daytime icon is a sun behind a cloud, and the sun kept rising there at one
+    in the morning. At night the same cloud gets the moon behind it, in
+    whatever phase it is actually in.
     """
     current = weather.current
-    if current.is_day or current.code not in icons.CLEAR_CODES:
+    if current.is_day:
         return icons.for_code(current.code, size)
-    return icons.Icon(moon.render(size, moon.phase(now)))
+    if current.code in icons.CLEAR_CODES:
+        return icons.Icon(moon.render(size, moon.phase(now)))
+    if icons.icon_name(current.code) == "partly":
+        disc_size, drop = icons.MOON_IN_PARTLY[16 if size >= 16 else 8]
+        return icons.behind_cloud(moon.render(disc_size, moon.phase(now)),
+                                  size, drop)
+    return icons.for_code(current.code, size)
 
 
 # --------------------------------------------------------------------------

@@ -415,6 +415,41 @@ _WMO_TO_ICON = {
 CLEAR_CODES = frozenset({0, 1})
 
 
+#: Per slot size: how big a moon goes in the corner of the `partly` icon, and
+#: how far the cloud drops to make room for it.
+#:
+#: The disc has to clear the cloud entirely, not merely mostly. For a crescent
+#: the lit limb *is* the outermost column of the disc, so a cloud drawn in
+#: front of it leaves a shape that is no longer a phase — a smaller moon beats
+#: a bitten one. These two pairs are the largest discs that touch no cloud
+#: pixel at any phase, and the cloud loses nothing by dropping: the rows it
+#: moves into were blank in the daytime icon.
+MOON_IN_PARTLY = {8: (5, 1), 16: (9, 2)}
+
+
+def behind_cloud(disc: tuple[str, ...], size: int = 8, drop: int = 0) -> Icon:
+    """A moon disc where the sun goes in `partly`, the cloud `drop` rows lower.
+
+    The cloud is the daytime one, pixel for pixel, so the two icons read as
+    the same weather under a different sky. It is still drawn second, and so
+    still wins where they meet — which, at the sizes in MOON_IN_PARTLY, is
+    nowhere.
+    """
+    table = ICONS_16 if size >= 16 else ICONS_8
+    grid = [["."] * size for _ in range(size)]
+    for y, row in enumerate(disc):
+        for x, cell in enumerate(row):
+            if cell != ".":
+                grid[y][x] = cell
+    for y, row in enumerate(table["partly"].rows):
+        if not 0 <= y + drop < size:
+            continue
+        for x, cell in enumerate(row):
+            if cell == "C":
+                grid[y + drop][x] = cell
+    return Icon(tuple("".join(row) for row in grid))
+
+
 def icon_name(wmo_code: int | None) -> str:
     return _WMO_TO_ICON.get(wmo_code if wmo_code is not None else -1, "cloudy")
 
