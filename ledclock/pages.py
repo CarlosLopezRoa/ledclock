@@ -846,9 +846,15 @@ AGENDA_TOP, AGENDA_BOTTOM = 7, 31
 #: Tick marks lived here first and said nothing about *which* hour, so the
 #: column had shape but no anchor.
 AGENDA_GUTTER = 8
-#: How far a finished event is dimmed. Still legible as shape, never
-#: mistakable for something still to come.
-AGENDA_PAST = 0.35
+#: How far a finished event is dimmed, relative to one still running.
+#:
+#: This was 0.35, chosen from a screenshot rendered at full gain. On the panel
+#: it compounds with the gain and, after dark, with the page's own night
+#: dimming, so a finished red event landed at (37, 12, 10): darker than the
+#: faint divider beside it in two channels of three, and read as nothing at
+#: all. At 0.6 the same event is (64, 20, 18) at night — visible, and still
+#: well under the 107 of one that is running.
+AGENDA_PAST = 0.6
 
 
 def _agenda_span(ctx: PageContext, now: datetime) -> tuple[float, float]:

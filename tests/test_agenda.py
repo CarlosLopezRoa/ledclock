@@ -11,7 +11,7 @@ import unittest
 from datetime import datetime, timedelta
 
 from ledclock import pages
-from ledclock.config import AgendaCalendar, AgendaConfig, Config
+from ledclock.config import AgendaCalendar, AgendaConfig, Config, DisplayConfig
 from ledclock.sources.calendar import Event
 
 PURPLE = (185, 130, 255)
@@ -188,6 +188,38 @@ class TestWhatItShows(unittest.TestCase):
         self.assertNotIn(PURPLE, colours, "a finished event should be dimmed")
         dimmed = tuple(int(c * pages.AGENDA_PAST) for c in PURPLE)
         self.assertIn(dimmed, colours, "a finished event should still be drawn")
+
+    def test_a_finished_event_still_shows_on_the_panel_at_night(self) -> None:
+        """Measured as the panel gets it: after the gain and the night dimming.
+
+        "Drawn" was never the problem. At 0.35 a finished red event reached
+        the panel at (37, 12, 10) after dark — less light than the divider
+        under the header, which is meant to be barely there — and read as an
+        empty stretch of the day. Light is counted as the sum of the three
+        channels, which is roughly what the LEDs put out.
+        """
+        display = DisplayConfig(gain=0.605, night_gain=0.42)
+        config = Config(display=display,
+                        agenda=AgendaConfig(calendars=[AgendaCalendar(name="work")]))
+        night = NOW.replace(hour=22, minute=0)
+        for colour in ((255, 80, 70), BLUE, PURPLE, (120, 235, 85)):
+            with self.subTest(colour=colour):
+                done = Event(night.replace(hour=20), night.replace(hour=21),
+                             "work", colour, "DONE")
+                live = Event(night.replace(hour=21, minute=30),
+                             night.replace(hour=23), "work", colour, "LIVE")
+                ctx = pages.PageContext(config=config, now=night,
+                                        events=[done, live], location=(43.0, 3.0))
+                self.assertTrue(ctx.is_night_here())
+                px = pages.render("agenda", ctx).dimmed(display.gain).load()
+
+                column = [px[12, y] for y in range(pages.AGENDA_TOP, pages.AGENDA_BOTTOM)]
+                lit = sorted({c for c in column if any(c)}, key=sum)
+                self.assertEqual(len(lit), 2, lit)
+                past, running = lit
+                divider = px[20, 5]
+                self.assertGreater(sum(past), sum(divider))
+                self.assertLess(sum(past), sum(running))
 
     def test_the_hour_channel_is_never_crossed(self) -> None:
         """Neither a box nor the now-mark may touch the digits.
