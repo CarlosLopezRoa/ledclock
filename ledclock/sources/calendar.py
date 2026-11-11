@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 
 log = logging.getLogger(__name__)
 
@@ -79,6 +79,25 @@ class Event:
 
     def running(self, now: datetime) -> bool:
         return self.start <= self._aware(now) < self.end
+
+
+def fills_the_day(start: datetime, end: datetime, day: datetime) -> bool:
+    """Whether an event runs from this day's midnight to the next one, or past.
+
+    Some calendars write an absence as a timed event from 0:00 to 0:00 rather
+    than as an all-day one. To the column that is the same thing an all-day
+    event is — not a block of the day but a state of it — and drawn as a block
+    it did real damage: it became the background of the whole column, it sat
+    in the header as the thing "running" from dawn to midnight so the header
+    never named the next real meeting, and every finished event painted over
+    it, dimmed, read as a dark hole where something should have been.
+
+    Midnights are taken from the local calendar rather than as `day` plus
+    twenty-four hours, so a day the clocks change on still counts.
+    """
+    midnight = datetime.combine(day.date(), time()).astimezone()
+    next_midnight = datetime.combine(day.date() + timedelta(days=1), time()).astimezone()
+    return start <= midnight and end >= next_midnight
 
 
 class _Store:
@@ -153,14 +172,17 @@ class _Store:
             name = str(raw.calendar().title())
             if name not in wanted:
                 continue
+            begins = datetime.fromtimestamp(
+                raw.startDate().timeIntervalSince1970()).astimezone()
+            ends = datetime.fromtimestamp(
+                raw.endDate().timeIntervalSince1970()).astimezone()
+            # And the ones that are all-day in everything but the checkbox.
+            if fills_the_day(begins, ends, day):
+                continue
             found.append(
                 Event(
-                    start=datetime.fromtimestamp(
-                        raw.startDate().timeIntervalSince1970()
-                    ).astimezone(),
-                    end=datetime.fromtimestamp(
-                        raw.endDate().timeIntervalSince1970()
-                    ).astimezone(),
+                    start=begins,
+                    end=ends,
                     calendar=name,
                     color=wanted[name] or _colour_of(raw.calendar()),
                     title=str(raw.title() or ""),
